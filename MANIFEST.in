@@ -1,0 +1,5 @@
+include install.sh
+include install.ps1
+include README.md
+recursive-exclude * __pycache__
+recursive-exclude * *.py[cod]
