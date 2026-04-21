@@ -33,12 +33,13 @@ _HISTORY_FILE = _HISTORY_DIR / "session.json"
 _MAX_SAVED_MESSAGES = 20  # only persist the last N messages to keep file small
 
 _PROMPT_STYLE = Style.from_dict({
-    "prompt":      "#00ff88 bold",
+    "prompt":      "white bold",
     "path":        "#888888",
     "separator":   "#333333",
 })
 
 _cwd: Path = config.WORKSPACE  # updated on !cd, always mirrors config.WORKSPACE
+_session_start: float = 0.0    # set in main() at session start
 
 _COMMANDS = {
     "/models":    "list available ollama models",
@@ -59,7 +60,7 @@ _LOGO_LINES = [
     " ██║     ╚██████╔╝██████╔╝███████╗██║  ██║ ",
     " ╚═╝      ╚═════╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝",
 ]
-_LOGO_COLORS = ["#00ff88", "#00ee88", "#00dd99", "#00ccaa", "#00bbbb", "#00aacc"]
+_LOGO_COLORS = ["#ffffff", "#e0e0e0", "#c0c0c0", "#a0a0a0", "#707070", "#404040"]
 
 
 def _make_logo() -> Text:
@@ -77,11 +78,11 @@ def _print_banner() -> None:
     info = Table.grid(padding=(0, 2))
     info.add_row(
         Text("  workspace", style="dim"),
-        Text(str(config.WORKSPACE), style="cyan"),        # read at call time
+        Text(str(config.WORKSPACE), style="white"),        # read at call time
     )
     info.add_row(
         Text("  model    ", style="dim"),
-        Text(config.OLLAMA_MODEL, style="bold #00ff88"),  # read at call time
+        Text(config.OLLAMA_MODEL, style="bold white"),  # read at call time
     )
     info.add_row(Text("", style=""), Text("", style=""))   # spacer
     info.add_row(
@@ -96,7 +97,7 @@ def _print_banner() -> None:
     console.print()
     console.print(Panel(
         Columns([logo, info], padding=(0, 4), equal=False),
-        border_style="#00ff88",
+        border_style="dim",
         padding=(0, 1),
         subtitle="[dim]local AI coding agent[/dim]",
     ))
@@ -106,8 +107,8 @@ def _print_banner() -> None:
 def _print_status() -> None:
     """Compact one-line status — shown after /switch or on demand."""
     console.print(
-        f"  [dim]model[/dim]     [bold #00ff88]{config.OLLAMA_MODEL}[/bold #00ff88]  "
-        f"[dim]workspace[/dim]  [cyan]{config.WORKSPACE}[/cyan]"
+        f"  [dim]model[/dim]     [bold white]{config.OLLAMA_MODEL}[/bold white]  "
+        f"[dim]workspace[/dim]  [white]{config.WORKSPACE}[/white]"
     )
 
 
@@ -119,8 +120,8 @@ def _pick_model(models: list[str], prompt_text: str = "  pick › ") -> str:
         box=box.SIMPLE_HEAD, padding=(0, 2),
     )
     table.add_column("#",     style="dim",  width=4, justify="right")
-    table.add_column("model", style="cyan")
-    table.add_column("",      style="green", width=3)
+    table.add_column("model", style="white")
+    table.add_column("",      style="dim", width=3)
 
     for i, name in enumerate(models, 1):
         active = name == config.OLLAMA_MODEL
@@ -142,7 +143,7 @@ def _pick_model(models: list[str], prompt_text: str = "  pick › ") -> str:
 
 
 def _select_model() -> None:
-    with console.status("[dim]  connecting to Ollama...[/dim]", spinner="dots", spinner_style="#00ff88"):
+    with console.status("[dim]  connecting to Ollama...[/dim]", spinner="dots", spinner_style="white"):
         try:
             models = list_models()
         except LLMError as e:
@@ -157,7 +158,7 @@ def _select_model() -> None:
     if not models:
         console.print(Panel(
             "[yellow]No models found in Ollama.[/yellow]\n\n"
-            "Pull one first:\n  [bold #00ff88]ollama pull qwen2.5-coder:7b[/bold #00ff88]",
+            "Pull one first:\n  [bold white]ollama pull qwen2.5-coder:7b[/bold white]",
             title="[yellow]no models[/yellow]",
             border_style="yellow",
         ))
@@ -167,7 +168,7 @@ def _select_model() -> None:
         return
 
     console.print(Panel(
-        f"Model [cyan]{config.OLLAMA_MODEL}[/cyan] not found locally.\n"
+        f"Model [white]{config.OLLAMA_MODEL}[/white] not found locally.\n"
         "[dim]Select one of the available models below:[/dim]",
         border_style="yellow",
         padding=(0, 1),
@@ -175,7 +176,7 @@ def _select_model() -> None:
     console.print()
     chosen = _pick_model(models)
     config.OLLAMA_MODEL = chosen
-    console.print(f"\n  [dim]using[/dim] [bold #00ff88]{config.OLLAMA_MODEL}[/bold #00ff88]\n")
+    console.print(f"\n  [dim]using[/dim] [bold white]{config.OLLAMA_MODEL}[/bold white]\n")
 
 
 # ── Shell execution ───────────────────────────────────────────────────────────
@@ -185,7 +186,7 @@ def _run_shell(command: str) -> None:
     command = command.strip()
 
     if not command:
-        console.print(f"  [dim]cwd →[/dim] [cyan]{_cwd}[/cyan]")
+        console.print(f"  [dim]cwd →[/dim] [white]{_cwd}[/white]")
         return
 
     # cd handled in-process
@@ -200,7 +201,7 @@ def _run_shell(command: str) -> None:
         if new_path.is_dir():
             _cwd = new_path
             config.WORKSPACE = new_path
-            console.print(f"  [dim]cwd →[/dim] [cyan]{_cwd}[/cyan]")
+            console.print(f"  [dim]cwd →[/dim] [white]{_cwd}[/white]")
         else:
             console.print(f"  [red]cd: no such directory:[/red] {target}")
         return
@@ -231,7 +232,7 @@ def _run_shell(command: str) -> None:
 
         if code in (0, None):
             console.print(Rule(
-                f"[dim green]✓ done[/dim green] [dim]({elapsed:.2f}s)[/dim]",
+                f"[dim]✓ done[/dim] [dim]({elapsed:.2f}s)[/dim]",
                 style="dim",
                 align="left",
             ))
@@ -271,12 +272,12 @@ def _on_tool_call(tool_name: str, parameters: dict) -> None:
     icon = icons.get(tool_name, "[dim]*[/dim]")
     param_hint = ""
     if "path" in parameters:
-        param_hint = f" [dim cyan]{parameters['path']}[/dim cyan]"
+        param_hint = f" [dim]{parameters['path']}[/dim]"
     elif "command" in parameters:
         short = parameters["command"][:55]
         ellipsis = "…" if len(parameters["command"]) > 55 else ""
         param_hint = f" [dim]{short}{ellipsis}[/dim]"
-    console.print(f"  {icon} [#00ff88]{tool_name}[/#00ff88]{param_hint}")
+    console.print(f"  {icon} [white]{tool_name}[/white]{param_hint}")
 
 
 # ── Slash commands ────────────────────────────────────────────────────────────
@@ -287,8 +288,9 @@ def _handle_slash(cmd: str, history: list[dict]) -> tuple[bool, list[dict]]:
     arg   = parts[1] if len(parts) > 1 else ""
 
     if verb in ("/exit", "/quit"):
-        console.print("\n[dim]bye.[/dim]")
+        _save_session(history)
         unload_model()
+        _print_exit(history, _session_start)
         sys.exit(0)
 
     if verb == "/clear":
@@ -300,11 +302,11 @@ def _handle_slash(cmd: str, history: list[dict]) -> tuple[bool, list[dict]]:
         return True, history
 
     if verb == "/workspace":
-        console.print(f"  [cyan]{config.WORKSPACE}[/cyan]")
+        console.print(f"  [white]{config.WORKSPACE}[/white]")
         return True, history
 
     if verb == "/model":
-        console.print(f"  [bold #00ff88]{config.OLLAMA_MODEL}[/bold #00ff88]")
+        console.print(f"  [bold white]{config.OLLAMA_MODEL}[/bold white]")
         return True, history
 
     if verb == "/models":
@@ -317,8 +319,8 @@ def _handle_slash(cmd: str, history: list[dict]) -> tuple[bool, list[dict]]:
         for name in models:
             active = name == config.OLLAMA_MODEL
             table.add_row(
-                Text("●" if active else " ", style="#00ff88" if active else "dim"),
-                Text(name, style="bold #00ff88" if active else "cyan"),
+                Text("●" if active else " ", style="white" if active else "dim"),
+                Text(name, style="bold white" if active else "white"),
             )
         console.print(table)
         return True, history
@@ -331,7 +333,7 @@ def _handle_slash(cmd: str, history: list[dict]) -> tuple[bool, list[dict]]:
             return True, history
         if arg and arg in models:
             config.OLLAMA_MODEL = arg
-            console.print(f"  [dim]switched →[/dim] [bold #00ff88]{config.OLLAMA_MODEL}[/bold #00ff88]")
+            console.print(f"  [dim]switched →[/dim] [bold white]{config.OLLAMA_MODEL}[/bold white]")
             _print_status()
             return True, history
         console.print("[dim]  select a model:[/dim]\n")
@@ -346,15 +348,15 @@ def _handle_slash(cmd: str, history: list[dict]) -> tuple[bool, list[dict]]:
         console.print(Rule("[dim]commands[/dim]", style="dim"))
         t1 = Table(show_header=False, box=None, padding=(0, 2))
         for c, desc in _COMMANDS.items():
-            t1.add_row(Text(c, style="bold #00ff88"), Text(desc, style="dim"))
+            t1.add_row(Text(c, style="bold white"), Text(desc, style="dim"))
         console.print(t1)
 
         console.print()
         console.print(Rule("[dim]shell[/dim]", style="dim"))
         t2 = Table(show_header=False, box=None, padding=(0, 2))
-        t2.add_row(Text("! <cmd>",     style="bold cyan"), Text("run a terminal command", style="dim"))
-        t2.add_row(Text("! cd <path>", style="bold cyan"), Text("change working directory", style="dim"))
-        t2.add_row(Text("!",           style="bold cyan"), Text("show current directory", style="dim"))
+        t2.add_row(Text("! <cmd>",     style="bold white"), Text("run a terminal command", style="dim"))
+        t2.add_row(Text("! cd <path>", style="bold white"), Text("change working directory", style="dim"))
+        t2.add_row(Text("!",           style="bold white"), Text("show current directory", style="dim"))
         console.print(t2)
         console.print()
         return True, history
@@ -373,7 +375,7 @@ def _prompt_label() -> HTML:
         path = str(_cwd)
     model_short = config.OLLAMA_MODEL.split(":")[0]   # strip tag for brevity
     return HTML(
-        f'<style color="#555555">{model_short}</style>'
+        f'<style color="#888888">{model_short}</style>'
         f'<style color="#333333"> │ </style>'
         f'<prompt>{path} ❯ </prompt>'
     )
@@ -477,9 +479,53 @@ def _inject_file_context(user_input: str) -> str:
 
 # ── Main REPL ─────────────────────────────────────────────────────────────────
 
+def _print_exit(history: list[dict], start_time: float) -> None:
+    """A proper goodbye — session stats + farewell."""
+    import datetime
+
+    elapsed   = time.monotonic() - start_time
+    minutes   = int(elapsed // 60)
+    seconds   = int(elapsed % 60)
+    duration  = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
+
+    # Count only user turns (not tool result injections)
+    turns = sum(1 for m in history if m["role"] == "user" and not m["content"].startswith("[tool:"))
+
+    now = datetime.datetime.now().strftime("%H:%M")
+
+    grid = Table.grid(padding=(0, 3))
+    grid.add_row(
+        Text("session ended", style="dim"),
+        Text(now, style="white"),
+    )
+    grid.add_row(
+        Text("duration     ", style="dim"),
+        Text(duration, style="white"),
+    )
+    grid.add_row(
+        Text("messages     ", style="dim"),
+        Text(str(turns), style="white"),
+    )
+    grid.add_row(
+        Text("model        ", style="dim"),
+        Text(config.OLLAMA_MODEL, style="white"),
+    )
+
+    console.print()
+    console.print(Panel(
+        grid,
+        border_style="#333333",
+        padding=(0, 2),
+        title="[dim]foder[/dim]",
+        title_align="left",
+        subtitle="[dim]session saved · model unloaded[/dim]",
+    ))
+    console.print()
+
+
 def main() -> None:
     global _cwd
-    config.load_project_config()   # load foder.json if present
+    config.load_project_config()
     _select_model()
     _cwd = config.WORKSPACE
     _print_banner()
@@ -493,13 +539,17 @@ def main() -> None:
     if conversation_history:
         console.print(f"  [dim]resumed {len(conversation_history)} messages from last session[/dim]\n")
 
+    session_start = time.monotonic()
+    global _session_start
+    _session_start = session_start
+
     while True:
         try:
             user_input = session.prompt(_prompt_label, style=_PROMPT_STYLE)
         except (EOFError, KeyboardInterrupt):
-            console.print("\n[dim]bye.[/dim]")
             _save_session(conversation_history)
             unload_model()
+            _print_exit(conversation_history, session_start)
             break
 
         user_input = user_input.strip()
@@ -544,7 +594,7 @@ def main() -> None:
             console.print(Text("\n  cancelled", style="dim"))
             continue
 
-        console.print(Text("  foder", style="bold #00ff88"), end="  ")
+        console.print(Text("  foder", style="bold white"), end="  ")
         full = _stream_response(token_iter)
 
         # Save after every turn — lightweight, only last 20 messages
@@ -555,7 +605,7 @@ def main() -> None:
             if "timed out" in msg:
                 hint = (
                     f"[yellow]Ollama timed out.[/yellow]\n\n"
-                    f"  The model took longer than [cyan]{config.LLM_TIMEOUT:.0f}s[/cyan].\n\n"
+                    f"  The model took longer than [white]{config.LLM_TIMEOUT:.0f}s[/white].\n\n"
                     f"  [dim]Try a faster model →[/dim]  /switch\n"
                     f"  [dim]Raise the limit    →[/dim]  FODER_LLM_TIMEOUT=600 foder"
                 )
