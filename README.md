@@ -26,7 +26,7 @@ No cloud. No API keys. Runs entirely on your machine.
 ### Linux / macOS
 
 ```bash
-git clone https://github.com/yourname/foder
+git clone https://github.com/Frictionalfor/foder.git
 cd foder
 bash install.sh
 ```
@@ -34,7 +34,7 @@ bash install.sh
 ### Windows (PowerShell)
 
 ```powershell
-git clone https://github.com/yourname/foder
+git clone https://github.com/Frictionalfor/foder.git
 cd foder
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
