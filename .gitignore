@@ -11,4 +11,3 @@ build/
 .venv
 venv/
 env/
-test_foder.py
