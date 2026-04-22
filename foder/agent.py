@@ -17,23 +17,44 @@ from foder.config import MAX_ITERATIONS
 _MAX_HISTORY_MESSAGES = 30  # tighter cap = less RAM
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
-_JSON_BARE_RE  = re.compile(r"(\{[^{}]*\"tool\"[^{}]*\})", re.DOTALL)
+_JSON_BARE_RE  = re.compile(r"\{[^{}]*\"tool\"\s*:\s*\"[^\"]+\"[^{}]*\"parameters\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
 
-# If response is shorter than this it might be a tool call — buffer it fully
-_TOOL_CALL_MAX_LEN = 512
+# No length cap — tool calls with large file content can be very long
+_TOOL_CALL_MAX_LEN = None
 
 
 def _extract_tool_call(text: str) -> dict | None:
+    """
+    Extract a tool call JSON from model output.
+    Uses json.JSONDecoder.raw_decode to correctly handle nested structures
+    and large file content payloads.
+    """
+    decoder = json.JSONDecoder()
+    text = text.strip()
+
+    # Try fenced block first
     match = _JSON_FENCE_RE.search(text)
-    if not match:
-        match = _JSON_BARE_RE.search(text)
-    if not match:
+    if match:
+        try:
+            data = json.loads(match.group(1))
+            if "tool" in data and "parameters" in data:
+                return data
+        except json.JSONDecodeError:
+            pass
+
+    # Scan for the first { and try to decode from there
+    start = text.find("{")
+    if start == -1:
         return None
+
     try:
-        data = json.loads(match.group(1))
+        data, _ = decoder.raw_decode(text, start)
+        if isinstance(data, dict) and "tool" in data and "parameters" in data:
+            return data
     except json.JSONDecodeError:
-        return None
-    return data if ("tool" in data and "parameters" in data) else None
+        pass
+
+    return None
 
 
 def _trim_history(history: list[dict]) -> list[dict]:
@@ -74,10 +95,8 @@ def run(
 
         raw_response = "".join(tokens)
 
-        # Only try tool call detection on short responses
-        tool_call = None
-        if len(raw_response) <= _TOOL_CALL_MAX_LEN:
-            tool_call = _extract_tool_call(raw_response)
+        # Try tool call detection on every response — no length cap
+        tool_call = _extract_tool_call(raw_response)
 
         if tool_call is None:
             # Final answer — stream the already-collected tokens

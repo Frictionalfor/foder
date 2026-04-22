@@ -16,7 +16,7 @@ MAX_ITERATIONS: int  = int(os.environ.get("FODER_MAX_ITER", "20"))
 SHELL_TIMEOUT: int   = int(os.environ.get("FODER_SHELL_TIMEOUT", "30"))
 
 # LLM request timeout (seconds)
-LLM_TIMEOUT: float   = float(os.environ.get("FODER_LLM_TIMEOUT", "300"))
+LLM_TIMEOUT: float   = float(os.environ.get("FODER_LLM_TIMEOUT", "600"))
 
 # Custom system prompt suffix (injected at end of system prompt)
 CUSTOM_INSTRUCTIONS: str = os.environ.get("FODER_INSTRUCTIONS", "")

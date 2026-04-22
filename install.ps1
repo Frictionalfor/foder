@@ -24,7 +24,7 @@ if (-not $python) {
     exit 1
 }
 
-$version = & $python -c "import sys; print('.'.join(map(str, sys.version_info[:2])))"
+$version = & $python -c 'import sys; print('.'.join(map(str, sys.version_info[:2])))'
 Write-Host "  [+] Python $version detected" -ForegroundColor Green
 
 # ── Check Ollama ──────────────────────────────────────────────────────────────
