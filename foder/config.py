@@ -7,7 +7,7 @@ WORKSPACE: Path = Path(os.environ.get("FODER_WORKSPACE", Path.cwd())).resolve()
 
 # Ollama settings
 OLLAMA_BASE_URL: str = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL: str    = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:7b")
+OLLAMA_MODEL: str    = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:3b")
 
 # Agent loop limits
 MAX_ITERATIONS: int  = int(os.environ.get("FODER_MAX_ITER", "20"))

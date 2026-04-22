@@ -1,11 +1,13 @@
-"""Foder CLI — simple, clear, shows work."""
+"""Foder CLI - simple, clear, shows work."""
 import sys, time, json, subprocess, difflib
 import foder.config as config
 from pathlib import Path
 from prompt_toolkit import PromptSession
-from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
 from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.key_binding import KeyBindings
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.table import Table
@@ -70,7 +72,7 @@ THEMES = {
 
 _THEME_FILE = Path.home() / ".foder" / "theme.json"
 
-# Active palette — populated by _load_theme()
+# Active palette - populated by _load_theme()
 _A1 = _A2 = _A3 = _A4 = _A5 = ""
 _DIM = "#6B7280"
 _OK  = "#86efac"
@@ -81,12 +83,13 @@ _PROMPT_STYLE: Style = Style.from_dict({})
 
 def _apply_theme(key: str) -> None:
     """Apply a theme by key, updating all palette globals."""
-    global _A1, _A2, _A3, _A4, _A5, _LOGO_COLORS, _PROMPT_STYLE
+    global _A1, _A2, _A3, _A4, _A5, _LOGO_COLORS, _PROMPT_STYLE, _logo_cache
     t = THEMES.get(key, THEMES["green"])
     _A1 = t["A1"]; _A2 = t["A2"]; _A3 = t["A3"]
     _A4 = t["A4"]; _A5 = t["A5"]
     _LOGO_COLORS = t["logo"]
     _PROMPT_STYLE = Style.from_dict({"prompt": f"{_A2} bold"})
+    _logo_cache = None  # invalidate cache on theme change
 
 
 def _save_theme(key: str) -> None:
@@ -148,12 +151,16 @@ _apply_theme(_load_theme())
 # ── Rest of globals ───────────────────────────────────────────────────────────
 _HISTORY_DIR        = Path.home() / ".foder"
 _HISTORY_FILE       = _HISTORY_DIR / "session.json"
+_PROMPT_HISTORY     = _HISTORY_DIR / "prompt_history"   # persisted prompt history for Ctrl+R
 _MAX_SAVED_MESSAGES = 20
 
 _cwd: Path          = config.WORKSPACE
 _session_start: float = 0.0
 _undo_store: dict   = {}
 _last_write: dict   = {}
+_last_shell_cmd: str = ""    # for !! re-run
+_last_response: str  = ""    # for /last
+_logo_cache: Text | None = None  # cached rendered logo
 
 _COMMANDS = {
     "/models":    "list ollama models",
@@ -162,6 +169,7 @@ _COMMANDS = {
     "/theme":     "change color theme",
     "/clear":     "clear screen + history",
     "/workspace": "show workspace",
+    "/last":      "show last response again",
     "/undo":      "revert last file write",
     "/diff":      "diff of last file write",
     "/run":       "auto-run the project",
@@ -170,19 +178,116 @@ _COMMANDS = {
 }
 
 _LOGO = [
-    "   ______          __         ",
-    "  / ____/___  ____/ /__  _____",
-    " / /_  / __ \\/ __  / _ \\/ ___/",
-    "/ __/ / /_/ / /_/ /  __/ /    ",
-    "/_/    \\____/\\__,_/\\___/_/     ",
+    "  ███████  ██████  ██████  ███████ ██████  ",
+    "  ██      ██    ██ ██   ██ ██      ██   ██ ",
+    "  █████   ██    ██ ██   ██ █████   ██████  ",
+    "  ██      ██    ██ ██   ██ ██      ██   ██ ",
+    "  ██       ██████  ██████  ███████ ██   ██ ",
+]
+
+# Shadow version - same shape, shifted right+down by 1, rendered darker
+_LOGO_SHADOW = [
+    "   ███████  ██████  ██████  ███████ ██████  ",
+    "   ██      ██    ██ ██   ██ ██      ██   ██ ",
+    "   █████   ██    ██ ██   ██ █████   ██████  ",
+    "   ██      ██    ██ ██   ██ ██      ██   ██ ",
+    "   ██       ██████  ██████  ███████ ██   ██ ",
 ]
 
 
+def _hex_to_rgb(h: str) -> tuple[int, int, int]:
+    h = h.lstrip("#")
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+
+def _lerp_color(c1: tuple, c2: tuple, t: float) -> str:
+    r = int(c1[0] + (c2[0] - c1[0]) * t)
+    g = int(c1[1] + (c2[1] - c1[1]) * t)
+    b = int(c1[2] + (c2[2] - c1[2]) * t)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _darken(h: str, factor: float = 0.35) -> str:
+    r, g, b = _hex_to_rgb(h)
+    return f"#{int(r*factor):02x}{int(g*factor):02x}{int(b*factor):02x}"
+
+
+def _brighten(h: str, factor: float = 1.6) -> str:
+    r, g, b = _hex_to_rgb(h)
+    return f"#{min(255,int(r*factor)):02x}{min(255,int(g*factor)):02x}{min(255,int(b*factor)):02x}"
+
+
 def _logo() -> Text:
-    t = Text()
-    for line, color in zip(_LOGO, _LOGO_COLORS):
-        t.append(line + "\n", style=f"bold {color}")
-    return t
+    """3D extruded logo - result is cached per theme. Recomputed only when theme changes."""
+    global _logo_cache
+    if _logo_cache is not None:
+        return _logo_cache
+
+    rows   = len(_LOGO)
+    colors = _LOGO_COLORS[:rows]
+    text   = Text()
+    # Pad all rows to same length
+    max_len = max(len(l) for l in _LOGO)
+    lines   = [l.ljust(max_len) for l in _LOGO]
+
+    for row_idx, line in enumerate(lines):
+        face_rgb  = _hex_to_rgb(colors[row_idx])
+        next_rgb  = _hex_to_rgb(colors[min(row_idx + 1, rows - 1)])
+        is_top    = row_idx == 0
+        is_bottom = row_idx == rows - 1
+
+        for col_idx, ch in enumerate(line):
+            t      = col_idx / max(max_len - 1, 1)
+            base   = _lerp_color(face_rgb, next_rgb, t * 0.35)
+            bright = _brighten(base, 1.8)
+            mid    = _brighten(base, 1.2)
+            dark   = _darken(base, 0.45)
+            deep   = _darken(base, 0.22)
+
+            is_block = ch == "█"
+
+            if not is_block:
+                # Space - check if the cell to the left or above was a block
+                # to render the right-side extrusion shadow
+                left_block  = col_idx > 0 and lines[row_idx][col_idx - 1] == "█"
+                above_block = row_idx > 0 and col_idx < len(lines[row_idx - 1]) and lines[row_idx - 1][col_idx] == "█"
+
+                if left_block:
+                    # Right-side extrusion: dark ▌ (left half) = shadow wall
+                    text.append("▌", style=f"{dark}")
+                elif above_block and not is_top:
+                    # Bottom extrusion: ▀ top half in dark = bottom face of letter
+                    text.append("▀", style=f"{deep}")
+                else:
+                    text.append(" ")
+            else:
+                if is_top:
+                    # Top face: bright ▀ on top + full block
+                    text.append("█", style=f"bold {bright}")
+                elif is_bottom:
+                    # Bottom face: slightly darker
+                    text.append("█", style=f"bold {mid}")
+                elif col_idx < 3 or (col_idx > 0 and lines[row_idx][col_idx - 1] != "█"):
+                    # Left edge or first block in a run: highlight strip
+                    text.append("█", style=f"bold {bright}")
+                else:
+                    text.append("█", style=f"bold {base}")
+
+        text.append("\n")
+
+    # Ground shadow row - ▀ blocks in very dark color, offset +1
+    shadow_rgb = _darken(colors[-1], 0.18)
+    text.append(" ")  # offset
+    for col_idx, ch in enumerate(lines[-1]):
+        if ch == "█":
+            text.append("▀", style=f"{shadow_rgb}")
+        else:
+            left_block = col_idx > 0 and lines[-1][col_idx - 1] == "█"
+            text.append("▄" if left_block else " ", style=f"{shadow_rgb}")
+    text.append("\n")
+
+    _logo_cache = text  # cache for this theme
+    return text
 
 
 def _print_banner() -> None:
@@ -329,7 +434,7 @@ def _on_tool_call(tool_name: str, parameters: dict) -> None:
     label = _TOOL_LABEL.get(tool_name, tool_name)
     hint  = ""
     if "path" in parameters:
-        hint = f"  [{_DIM}]{parameters['path']}[/{_DIM}]"
+        hint = parameters["path"]
         if tool_name == "file_write":
             try:
                 from foder.security import validate_path
@@ -342,12 +447,13 @@ def _on_tool_call(tool_name: str, parameters: dict) -> None:
                 pass
     elif "command" in parameters:
         short = parameters["command"][:60]
-        hint  = f"  [{_DIM}]{short}{'…' if len(parameters['command']) > 60 else ''}[/{_DIM}]"
-    # Print inline — no panel, just a clean line
+        hint  = short + ("…" if len(parameters["command"]) > 60 else "")
+
     t = Text()
     t.append("  ▸ ", style=_A4)
     t.append(label, style=_A2)
-    t.append(hint)
+    if hint:
+        t.append("  " + hint, style=_DIM)
     console.print(t)
 
 
@@ -374,7 +480,7 @@ def _auto_run() -> None:
         cmd = f"gcc {c[0].name} -o {c[0].stem} && ./{c[0].stem}"
         console.print(f"  [{_DIM}]→[/{_DIM}] [{_A2}]{cmd}[/{_A2}]")
         _run_shell(cmd); return
-    console.print(f"  [{_DIM}]cannot detect project type — use[/{_DIM}] [{_A2}]! <cmd>[/{_A2}]")
+    console.print(f"  [{_DIM}]cannot detect project type - use[/{_DIM}] [{_A2}]! <cmd>[/{_A2}]")
 
 
 # ── Git context ───────────────────────────────────────────────────────────────
@@ -413,6 +519,19 @@ def _handle_slash(cmd: str, history: list[dict]) -> tuple[bool, list[dict]]:
 
     if verb == "/workspace":
         console.print(f"  [{_A2}]{config.WORKSPACE}[/{_A2}]"); return True, history
+
+    if verb == "/last":
+        if not _last_response:
+            console.print(f"  [{_DIM}]no previous response[/{_DIM}]")
+        else:
+            is_md = any(c in _last_response for c in ("```", "**", "##", "\n- ", "\n* ", "\n1."))
+            label = Text(); label.append("  ◆ ", style=_A3); label.append("foder", style=_A1)
+            if is_md:
+                console.print(label); console.print()
+                console.print(Panel(Markdown(_last_response), border_style=_A5, padding=(1, 2)))
+            else:
+                console.print(label, end="  "); console.print(_last_response)
+        return True, history
 
     if verb == "/model":
         console.print(f"  [bold {_A1}]{config.OLLAMA_MODEL}[/bold {_A1}]"); return True, history
@@ -512,6 +631,36 @@ def _handle_slash(cmd: str, history: list[dict]) -> tuple[bool, list[dict]]:
 
 # ── Prompt ────────────────────────────────────────────────────────────────────
 
+# ── Tab completer ─────────────────────────────────────────────────────────────
+
+class FoderCompleter(Completer):
+    """Tab completion for slash commands and @filenames."""
+
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+
+        if text.startswith("/"):
+            word = text.lstrip("/").lower()
+            for cmd in _COMMANDS:
+                if cmd.lstrip("/").startswith(word):
+                    yield Completion(cmd, start_position=-len(text))
+            return
+
+        at_pos = text.rfind("@")
+        if at_pos != -1:
+            partial = text[at_pos + 1:]
+            try:
+                for p in sorted(_cwd.iterdir()):
+                    if p.name.startswith(partial):
+                        yield Completion(
+                            p.name,
+                            start_position=-len(partial),
+                            display=p.name + ("/" if p.is_dir() else ""),
+                        )
+            except Exception:
+                pass
+
+
 def _prompt_label() -> HTML:
     try:
         rel  = _cwd.relative_to(config.WORKSPACE)
@@ -524,26 +673,39 @@ def _prompt_label() -> HTML:
                 f'<prompt>{path} ❯ </prompt>')
 
 
-# ── Response renderer ─────────────────────────────────────────────────────────
+# ── Response renderer - streams live ─────────────────────────────────────────
 
-def _render_response(tokens: list[str]) -> str:
-    full = "".join(tokens).strip()
-    if not full:
-        return full
-
-    is_md = any(c in full for c in ("```", "**", "##", "\n- ", "\n* ", "\n1."))
+def _render_response(token_gen) -> str:
+    """
+    Stream tokens to the terminal as they arrive.
+    Collects full text, then re-renders markdown in a panel if needed.
+    Returns the full response string.
+    """
+    global _last_response
 
     label = Text()
     label.append("  ◆ ", style=_A3)
     label.append("foder", style=_A1)
+    console.print(label, end="  ")
 
-    if is_md:
-        console.print(label)
+    collected = []
+    try:
+        for token in token_gen:
+            # Print each token immediately - no buffering
+            console.print(token, end="", markup=False)
+            collected.append(token)
+        console.print()  # newline after stream ends
+    except KeyboardInterrupt:
+        console.print()
+        console.print(Text("  cancelled", style=_DIM))
+
+    full = "".join(collected).strip()
+    _last_response = full  # store for /last
+
+    # If markdown detected, re-render cleanly in a panel below
+    if full and any(c in full for c in ("```", "**", "##", "\n- ", "\n* ", "\n1.")):
         console.print()
         console.print(Panel(Markdown(full), border_style=_A5, padding=(1, 2)))
-    else:
-        console.print(label, end="  ")
-        console.print(full)
 
     return full
 
@@ -587,7 +749,7 @@ def _inject_file_context(user_input: str) -> str:
                 continue
             raw = target.read_bytes()
             if len(raw) > 32_000:
-                injected.append(f"[{ref} — too large, use file_read]")
+                injected.append(f"[{ref} - too large, use file_read]")
                 continue
             injected.append(f"--- @{ref} ---\n{raw.decode('utf-8', errors='replace')}\n--- end {ref} ---")
         except Exception:
@@ -622,15 +784,38 @@ def _print_exit(history: list[dict], start_time: float) -> None:
 # ── Main REPL ─────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    global _cwd, _session_start
+    global _cwd, _session_start, _last_shell_cmd
+
+    # ── CLI argument mode - foder "do something" ──────────────────────────
+    if len(sys.argv) > 1:
+        prompt = " ".join(sys.argv[1:])
+        config.load_project_config()
+        _apply_theme(_load_theme())
+        _select_model()
+        _cwd = config.WORKSPACE
+        history: list[dict] = []
+        token_gen, _ = run(prompt, history, on_tool_call=_on_tool_call)
+        for token in token_gen:
+            sys.stdout.write(token)
+            sys.stdout.flush()
+        sys.stdout.write("\n")
+        return
+
     config.load_project_config()
     _select_model()
     _cwd = config.WORKSPACE
     _print_banner()
 
-    session = PromptSession(history=InMemoryHistory(), style=_PROMPT_STYLE)
-    conversation_history: list[dict] = _load_session()
+    # Persist prompt history across sessions for Ctrl+R search
+    _HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    session = PromptSession(
+        history=FileHistory(str(_PROMPT_HISTORY)),
+        style=_PROMPT_STYLE,
+        completer=FoderCompleter(),
+        complete_while_typing=False,   # only complete on Tab
+    )
 
+    conversation_history: list[dict] = _load_session()
     if conversation_history:
         console.print(f"  [{_A3}]◆[/{_A3}] [{_DIM}]resumed {len(conversation_history)} messages[/{_DIM}]\n")
 
@@ -641,7 +826,6 @@ def main() -> None:
             user_input = session.prompt(_prompt_label, style=_PROMPT_STYLE)
         except (EOFError, KeyboardInterrupt):
             _save_session(conversation_history)
-            unload_model()
             _print_exit(conversation_history, _session_start)
             break
 
@@ -649,27 +833,37 @@ def main() -> None:
         if not user_input:
             continue
 
-        # Shell
+        # ── !! re-run last shell command ───────────────────────────────────
+        if user_input == "!!":
+            if not _last_shell_cmd:
+                console.print(f"  [{_DIM}]no previous command[/{_DIM}]\n")
+            else:
+                console.print()
+                _run_shell(_last_shell_cmd)
+                console.print()
+            continue
+
+        # ── Shell passthrough ──────────────────────────────────────────────
         if user_input.startswith("!"):
+            cmd = user_input[1:].strip()
+            _last_shell_cmd = cmd   # save for !!
             console.print()
-            _run_shell(user_input[1:].strip())
+            _run_shell(cmd)
             console.print()
             continue
 
-        # Slash commands
+        # ── Slash commands ─────────────────────────────────────────────────
         if user_input.startswith("/"):
             console.print()
             _, conversation_history = _handle_slash(user_input, conversation_history)
             console.print()
             continue
 
-        # @file injection
+        # ── @file injection ────────────────────────────────────────────────
         resolved = _inject_file_context(user_input)
 
-        # Agent turn
+        # ── Agent turn ─────────────────────────────────────────────────────
         console.print()
-
-        # ── User bubble — simple, no heavy panel ──────────────────────────
         you = Text()
         you.append("  you  ", style=f"bold {_A2}")
         you.append(user_input, style="white")
@@ -677,44 +871,31 @@ def main() -> None:
         console.print(Rule(style=_A5))
         console.print()
 
-        # ── Thinking indicator ────────────────────────────────────────────
-        tool_calls_buffer: list[tuple] = []
-
-        def _buf(tn: str, tp: dict) -> None:
-            tool_calls_buffer.append((tn, tp))
-
-        thinking = Text()
-        thinking.append("  ◆ ", style=_A3)
-        thinking.append("thinking...", style=_DIM)
+        # Show thinking indicator, then stream response live
+        # Tool calls print via _on_tool_call during the run() call
+        console.print(Text("  ◆ thinking...", style=_DIM), end="\r")
 
         try:
-            with Live(thinking, console=console, refresh_per_second=10, transient=True):
-                token_iter, conversation_history = run(
-                    resolved, conversation_history, on_tool_call=_buf)
-                tokens = list(token_iter)
+            token_gen, conversation_history = run(
+                resolved, conversation_history, on_tool_call=_on_tool_call)
         except KeyboardInterrupt:
             console.print(Text("  cancelled", style=_DIM))
             continue
 
-        # ── Show what the agent did ───────────────────────────────────────
-        if tool_calls_buffer:
-            for tn, tp in tool_calls_buffer:
-                _on_tool_call(tn, tp)
-            console.print()
+        # Clear the thinking line before streaming
+        console.print(" " * 30, end="\r")
 
-        # ── Response ──────────────────────────────────────────────────────
-        full = _render_response(tokens)
+        full = _render_response(token_gen)
         _save_session(conversation_history)
 
-        # Error panels
         if full.strip().startswith("[llm error]"):
             msg = full.strip()
             if "timed out" in msg:
                 hint = (f"[yellow]Ollama timed out.[/yellow]\n\n"
                         f"  [{_DIM}]took longer than[/{_DIM}] [{_A2}]{config.LLM_TIMEOUT:.0f}s[/{_A2}]\n\n"
-                        f"  [{_DIM}]try a smaller task  →[/{_DIM}]  e.g. 'make index.html' then 'make style.css'\n"
-                        f"  [{_DIM}]faster model        →[/{_DIM}]  /switch\n"
-                        f"  [{_DIM}]raise limit         →[/{_DIM}]  FODER_LLM_TIMEOUT=900 foder")
+                        f"  [{_DIM}]try smaller tasks  →[/{_DIM}]  e.g. 'make index.html' then 'make style.css'\n"
+                        f"  [{_DIM}]faster model       →[/{_DIM}]  /switch\n"
+                        f"  [{_DIM}]raise limit        →[/{_DIM}]  FODER_LLM_TIMEOUT=900 foder")
             elif "Cannot connect" in msg:
                 hint = "[yellow]Cannot reach Ollama.[/yellow]\n\n  ollama serve"
             else:
