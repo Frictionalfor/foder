@@ -19,7 +19,7 @@ from foder.config import MAX_ITERATIONS
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 _TOOL_RESULT_MAX_CHARS = 500   # truncate tool results stored in history
-_RECENT_TURNS          = 6     # messages to include per LLM request
+_RECENT_TURNS          = 10    # messages to include per LLM request
 _MAX_HISTORY_MESSAGES  = 40    # hard cap on in-memory history
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
@@ -78,10 +78,24 @@ def _trim_history(history: list[dict]) -> list[dict]:
 
 def _build_messages(history: list[dict]) -> list[dict]:
     """
-    Send only the most recent messages to keep requests fast.
-    Always includes system prompt + last _RECENT_TURNS messages.
+    Send the system prompt + recent history to the LLM.
+    Always includes the first user message of the current turn so the model
+    never loses context of what it was asked to do.
     """
-    recent = history[-_RECENT_TURNS:] if len(history) > _RECENT_TURNS else history
+    if len(history) <= _RECENT_TURNS:
+        return build_messages(history)
+
+    recent = history[-_RECENT_TURNS:]
+
+    # Always anchor with the original user request (first non-tool message)
+    # so the model remembers the full task across multiple tool calls
+    first_user = next(
+        (m for m in history if m["role"] == "user" and not m["content"].startswith("[tool:")),
+        None,
+    )
+    if first_user and first_user not in recent:
+        recent = [first_user] + recent
+
     return build_messages(recent)
 
 

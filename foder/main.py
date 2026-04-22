@@ -173,6 +173,7 @@ _COMMANDS = {
     "/undo":      "revert last file write",
     "/diff":      "diff of last file write",
     "/run":       "auto-run the project",
+    "/arch":      "show architecture diagram",
     "/help":      "show this help",
     "/exit":      "quit",
 }
@@ -502,6 +503,61 @@ def _get_git_context() -> str:
         return ""
 
 
+# ── Architecture diagram ──────────────────────────────────────────────────────
+
+def _print_arch() -> None:
+    """Render the foder architecture as a styled diagram."""
+
+    W  = _A2   # main color
+    D  = _DIM  # dim
+    B  = _A4   # border/box color
+    H  = _A1   # highlight
+
+    lines = [
+        (D,  "                    foder architecture                    "),
+        (D,  ""),
+        (W,  "  ┌─────────────────────────────────────────────────┐    "),
+        (W,  "  │                    USER                          │    "),
+        (W,  "  │         (types a prompt in the terminal)         │    "),
+        (W,  "  └───────────────────────┬─────────────────────────┘    "),
+        (D,  "                          │                               "),
+        (D,  "                          ▼                               "),
+        (H,  "  ┌─────────────────────────────────────────────────┐    "),
+        (H,  "  │               FODER CLI  (main.py)               │    "),
+        (H,  "  │   prompt · tab complete · themes · session       │    "),
+        (H,  "  └──────────────┬──────────────────────────────────┘    "),
+        (D,  "                 │                                        "),
+        (D,  "                 ▼                                        "),
+        (W,  "  ┌─────────────────────────────────────────────────┐    "),
+        (W,  "  │             AGENT LOOP  (agent.py)               │    "),
+        (W,  "  │   detect tool call · execute · loop · stream     │    "),
+        (W,  "  └────────┬──────────────────────────┬─────────────┘    "),
+        (D,  "           │                          │                   "),
+        (D,  "           ▼                          ▼                   "),
+        (B,  "  ┌─────────────────┐      ┌──────────────────────┐      "),
+        (B,  "  │  TOOL SYSTEM    │      │  OLLAMA  (local LLM)  │      "),
+        (B,  "  │  (tools/)       │      │  qwen · llama · etc   │      "),
+        (B,  "  │                 │      │  runs on your machine  │      "),
+        (B,  "  │  file_read      │      │  no cloud · no keys   │      "),
+        (B,  "  │  file_write     │      └──────────────────────┘      "),
+        (B,  "  │  dir_list       │                                     "),
+        (B,  "  │  shell_exec     │                                     "),
+        (B,  "  └────────┬────────┘                                     "),
+        (D,  "           │                                              "),
+        (D,  "           ▼                                              "),
+        (W,  "  ┌─────────────────────────────────────────────────┐    "),
+        (W,  "  │              FILE SYSTEM / SHELL                 │    "),
+        (W,  "  │   your project files · terminal commands         │    "),
+        (W,  "  └─────────────────────────────────────────────────┘    "),
+        (D,  ""),
+    ]
+
+    console.print()
+    for style, line in lines:
+        console.print(Text(line, style=style))
+    console.print()
+
+
 # ── Slash commands ────────────────────────────────────────────────────────────
 
 def _handle_slash(cmd: str, history: list[dict]) -> tuple[bool, list[dict]]:
@@ -607,6 +663,9 @@ def _handle_slash(cmd: str, history: list[dict]) -> tuple[bool, list[dict]]:
 
     if verb == "/run":
         _auto_run(); return True, history
+
+    if verb == "/arch":
+        _print_arch(); return True, history
 
     if verb == "/help":
         console.print()
