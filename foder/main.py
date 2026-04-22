@@ -1,17 +1,13 @@
-"""
-Foder CLI — interactive REPL with streaming output.
-"""
-
-import sys
-import time
-import json
-import subprocess
+"""Foder CLI - simple, clear, shows work."""
+import sys, time, json, subprocess, difflib
 import foder.config as config
 from pathlib import Path
 from prompt_toolkit import PromptSession
-from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
 from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.key_binding import KeyBindings
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.table import Table
@@ -19,265 +15,491 @@ from rich.panel import Panel
 from rich.text import Text
 from rich.columns import Columns
 from rich.rule import Rule
+from rich.live import Live
 from rich import box
-
 from foder.agent import run
 from foder.llm import list_models, unload_model, LLMError
 from foder.security import validate_command, SecurityError
 
 console = Console(highlight=False)
 
-# Session history file — stored in ~/.foder/
-_HISTORY_DIR  = Path.home() / ".foder"
-_HISTORY_FILE = _HISTORY_DIR / "session.json"
-_MAX_SAVED_MESSAGES = 20  # only persist the last N messages to keep file small
+# ── Themes ────────────────────────────────────────────────────────────────────
 
-_PROMPT_STYLE = Style.from_dict({
-    "prompt":      "white bold",
-    "path":        "#888888",
-    "separator":   "#333333",
-})
-
-_cwd: Path = config.WORKSPACE  # updated on !cd, always mirrors config.WORKSPACE
-_session_start: float = 0.0    # set in main() at session start
-
-_COMMANDS = {
-    "/models":    "list available ollama models",
-    "/switch":    "switch model mid-session",
-    "/model":     "show active model",
-    "/clear":     "clear conversation history",
-    "/workspace": "show workspace path",
-    "/help":      "show this help",
-    "/exit":      "quit foder",
+THEMES = {
+    "green": {
+        "name": "Green",
+        "desc": "classic terminal green",
+        "A1": "#BBF7D0", "A2": "#4ADE80", "A3": "#16A34A",
+        "A4": "#166534", "A5": "#052E16",
+        "logo": ["#F0FDF4","#BBF7D0","#4ADE80","#16A34A","#166534","#052E16"],
+    },
+    "teal": {
+        "name": "Cyber Teal",
+        "desc": "sharp, technical, hacker-ish",
+        "A1": "#67E8F9", "A2": "#06B6D4", "A3": "#0E7490",
+        "A4": "#155E75", "A5": "#164E63",
+        "logo": ["#ECFEFF","#A5F3FC","#67E8F9","#06B6D4","#0E7490","#164E63"],
+    },
+    "amber": {
+        "name": "Amber",
+        "desc": "warm, energetic, stands out",
+        "A1": "#FDE68A", "A2": "#F59E0B", "A3": "#B45309",
+        "A4": "#78350F", "A5": "#451A03",
+        "logo": ["#FFFBEB","#FDE68A","#FCD34D","#F59E0B","#B45309","#451A03"],
+    },
+    "rose": {
+        "name": "Rose",
+        "desc": "bold, modern, memorable",
+        "A1": "#FECDD3", "A2": "#FB7185", "A3": "#E11D48",
+        "A4": "#9F1239", "A5": "#4C0519",
+        "logo": ["#FFF1F2","#FECDD3","#FDA4AF","#FB7185","#E11D48","#9F1239"],
+    },
+    "blue": {
+        "name": "Electric Blue",
+        "desc": "clean, professional, classic dev tool",
+        "A1": "#BAE6FD", "A2": "#38BDF8", "A3": "#0284C7",
+        "A4": "#075985", "A5": "#0C4A6E",
+        "logo": ["#F0F9FF","#BAE6FD","#7DD3FC","#38BDF8","#0284C7","#0369A1"],
+    },
+    "lime": {
+        "name": "Neon Lime",
+        "desc": "aggressive, terminal-native, very visible",
+        "A1": "#D9F99D", "A2": "#A3E635", "A3": "#65A30D",
+        "A4": "#3F6212", "A5": "#1A2E05",
+        "logo": ["#F7FEE7","#D9F99D","#BEF264","#A3E635","#65A30D","#3F6212"],
+    },
 }
 
-# Gradient colours for the logo (top → bottom)
-_LOGO_LINES = [
-    " ███████╗ ██████╗ ██████╗ ███████╗██████╗ ",
-    " ██╔════╝██╔═══██╗██╔══██╗██╔════╝██╔══██╗",
-    " █████╗  ██║   ██║██║  ██║█████╗  ██████╔╝",
-    " ██╔══╝  ██║   ██║██║  ██║██╔══╝  ██╔══██╗",
-    " ██║     ╚██████╔╝██████╔╝███████╗██║  ██║ ",
-    " ╚═╝      ╚═════╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝",
+_THEME_FILE = Path.home() / ".foder" / "theme.json"
+
+# Active palette - populated by _load_theme()
+_A1 = _A2 = _A3 = _A4 = _A5 = ""
+_DIM = "#6B7280"
+_OK  = "#86efac"
+_ERR = "#fca5a5"
+_LOGO_COLORS: list[str] = []
+_PROMPT_STYLE: Style = Style.from_dict({})
+
+
+def _apply_theme(key: str) -> None:
+    """Apply a theme by key, updating all palette globals."""
+    global _A1, _A2, _A3, _A4, _A5, _LOGO_COLORS, _PROMPT_STYLE, _logo_cache
+    t = THEMES.get(key, THEMES["green"])
+    _A1 = t["A1"]; _A2 = t["A2"]; _A3 = t["A3"]
+    _A4 = t["A4"]; _A5 = t["A5"]
+    _LOGO_COLORS = t["logo"]
+    _PROMPT_STYLE = Style.from_dict({"prompt": f"{_A2} bold"})
+    _logo_cache = None  # invalidate cache on theme change
+
+
+def _save_theme(key: str) -> None:
+    try:
+        _THEME_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _THEME_FILE.write_text(json.dumps({"theme": key}), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _load_theme() -> str:
+    """Load saved theme key, or return 'green' as default."""
+    try:
+        if _THEME_FILE.exists():
+            data = json.loads(_THEME_FILE.read_text(encoding="utf-8"))
+            key  = data.get("theme", "green")
+            if key in THEMES:
+                return key
+    except Exception:
+        pass
+    return "green"
+
+
+def _pick_theme() -> str:
+    """Show theme picker and return chosen key."""
+    keys = list(THEMES.keys())
+    console.print()
+    table = Table(show_header=True, header_style=_DIM, box=box.SIMPLE_HEAD, padding=(0, 2))
+    table.add_column("#",      style=_DIM, width=4, justify="right")
+    table.add_column("theme",  style="bold")
+    table.add_column("desc",   style=_DIM)
+    table.add_column("",       width=3)
+
+    for i, key in enumerate(keys, 1):
+        t      = THEMES[key]
+        active = (key == _load_theme())
+        # Show a colour swatch using the theme's A2
+        swatch = Text("██", style=t["A2"])
+        table.add_row(str(i), t["name"], t["desc"], "◆" if active else "")
+
+    console.print(table)
+    console.print()
+
+    while True:
+        try:
+            raw = input("  pick › ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return _load_theme()
+        if raw.isdigit() and 1 <= int(raw) <= len(keys):
+            return keys[int(raw) - 1]
+        if raw in keys:
+            return raw
+        console.print(f"  [yellow]enter 1–{len(keys)}[/yellow]")
+
+
+# ── Init theme on module load ─────────────────────────────────────────────────
+_apply_theme(_load_theme())
+
+# ── Rest of globals ───────────────────────────────────────────────────────────
+_HISTORY_DIR        = Path.home() / ".foder"
+_HISTORY_FILE       = _HISTORY_DIR / "session.json"
+_PROMPT_HISTORY     = _HISTORY_DIR / "prompt_history"   # persisted prompt history for Ctrl+R
+_MAX_SAVED_MESSAGES = 20
+
+_cwd: Path          = config.WORKSPACE
+_session_start: float = 0.0
+_undo_store: dict   = {}
+_last_write: dict   = {}
+_last_shell_cmd: str = ""    # for !! re-run
+_last_response: str  = ""    # for /last
+_logo_cache: Text | None = None  # cached rendered logo
+
+_COMMANDS = {
+    "/models":    "list ollama models",
+    "/switch":    "switch model",
+    "/model":     "show active model",
+    "/theme":     "change color theme",
+    "/clear":     "clear screen + history",
+    "/workspace": "show workspace",
+    "/last":      "show last response again",
+    "/undo":      "revert last file write",
+    "/diff":      "diff of last file write",
+    "/run":       "auto-run the project",
+    "/help":      "show this help",
+    "/exit":      "quit",
+}
+
+_LOGO = [
+    "  ███████  ██████  ██████  ███████ ██████  ",
+    "  ██      ██    ██ ██   ██ ██      ██   ██ ",
+    "  █████   ██    ██ ██   ██ █████   ██████  ",
+    "  ██      ██    ██ ██   ██ ██      ██   ██ ",
+    "  ██       ██████  ██████  ███████ ██   ██ ",
 ]
-_LOGO_COLORS = ["#ffffff", "#e0e0e0", "#c0c0c0", "#a0a0a0", "#707070", "#404040"]
+
+# Shadow version - same shape, shifted right+down by 1, rendered darker
+_LOGO_SHADOW = [
+    "   ███████  ██████  ██████  ███████ ██████  ",
+    "   ██      ██    ██ ██   ██ ██      ██   ██ ",
+    "   █████   ██    ██ ██   ██ █████   ██████  ",
+    "   ██      ██    ██ ██   ██ ██      ██   ██ ",
+    "   ██       ██████  ██████  ███████ ██   ██ ",
+]
 
 
-def _make_logo() -> Text:
-    logo = Text()
-    for line, color in zip(_LOGO_LINES, _LOGO_COLORS):
-        logo.append(line + "\n", style=f"bold {color}")
-    return logo
+def _hex_to_rgb(h: str) -> tuple[int, int, int]:
+    h = h.lstrip("#")
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
 
-# ── Banner ────────────────────────────────────────────────────────────────────
+def _lerp_color(c1: tuple, c2: tuple, t: float) -> str:
+    r = int(c1[0] + (c2[0] - c1[0]) * t)
+    g = int(c1[1] + (c2[1] - c1[1]) * t)
+    b = int(c1[2] + (c2[2] - c1[2]) * t)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _darken(h: str, factor: float = 0.35) -> str:
+    r, g, b = _hex_to_rgb(h)
+    return f"#{int(r*factor):02x}{int(g*factor):02x}{int(b*factor):02x}"
+
+
+def _brighten(h: str, factor: float = 1.6) -> str:
+    r, g, b = _hex_to_rgb(h)
+    return f"#{min(255,int(r*factor)):02x}{min(255,int(g*factor)):02x}{min(255,int(b*factor)):02x}"
+
+
+def _logo() -> Text:
+    """3D extruded logo - result is cached per theme. Recomputed only when theme changes."""
+    global _logo_cache
+    if _logo_cache is not None:
+        return _logo_cache
+
+    rows   = len(_LOGO)
+    colors = _LOGO_COLORS[:rows]
+    text   = Text()
+    # Pad all rows to same length
+    max_len = max(len(l) for l in _LOGO)
+    lines   = [l.ljust(max_len) for l in _LOGO]
+
+    for row_idx, line in enumerate(lines):
+        face_rgb  = _hex_to_rgb(colors[row_idx])
+        next_rgb  = _hex_to_rgb(colors[min(row_idx + 1, rows - 1)])
+        is_top    = row_idx == 0
+        is_bottom = row_idx == rows - 1
+
+        for col_idx, ch in enumerate(line):
+            t      = col_idx / max(max_len - 1, 1)
+            base   = _lerp_color(face_rgb, next_rgb, t * 0.35)
+            bright = _brighten(base, 1.8)
+            mid    = _brighten(base, 1.2)
+            dark   = _darken(base, 0.45)
+            deep   = _darken(base, 0.22)
+
+            is_block = ch == "█"
+
+            if not is_block:
+                # Space - check if the cell to the left or above was a block
+                # to render the right-side extrusion shadow
+                left_block  = col_idx > 0 and lines[row_idx][col_idx - 1] == "█"
+                above_block = row_idx > 0 and col_idx < len(lines[row_idx - 1]) and lines[row_idx - 1][col_idx] == "█"
+
+                if left_block:
+                    # Right-side extrusion: dark ▌ (left half) = shadow wall
+                    text.append("▌", style=f"{dark}")
+                elif above_block and not is_top:
+                    # Bottom extrusion: ▀ top half in dark = bottom face of letter
+                    text.append("▀", style=f"{deep}")
+                else:
+                    text.append(" ")
+            else:
+                if is_top:
+                    # Top face: bright ▀ on top + full block
+                    text.append("█", style=f"bold {bright}")
+                elif is_bottom:
+                    # Bottom face: slightly darker
+                    text.append("█", style=f"bold {mid}")
+                elif col_idx < 3 or (col_idx > 0 and lines[row_idx][col_idx - 1] != "█"):
+                    # Left edge or first block in a run: highlight strip
+                    text.append("█", style=f"bold {bright}")
+                else:
+                    text.append("█", style=f"bold {base}")
+
+        text.append("\n")
+
+    # Ground shadow row - ▀ blocks in very dark color, offset +1
+    shadow_rgb = _darken(colors[-1], 0.18)
+    text.append(" ")  # offset
+    for col_idx, ch in enumerate(lines[-1]):
+        if ch == "█":
+            text.append("▀", style=f"{shadow_rgb}")
+        else:
+            left_block = col_idx > 0 and lines[-1][col_idx - 1] == "█"
+            text.append("▄" if left_block else " ", style=f"{shadow_rgb}")
+    text.append("\n")
+
+    _logo_cache = text  # cache for this theme
+    return text
+
 
 def _print_banner() -> None:
-    logo = _make_logo()
-
-    info = Table.grid(padding=(0, 2))
-    info.add_row(
-        Text("  workspace", style="dim"),
-        Text(str(config.WORKSPACE), style="white"),        # read at call time
-    )
-    info.add_row(
-        Text("  model    ", style="dim"),
-        Text(config.OLLAMA_MODEL, style="bold white"),  # read at call time
-    )
-    info.add_row(Text("", style=""), Text("", style=""))   # spacer
-    info.add_row(
-        Text("  shell    ", style="dim"),
-        Text("! <cmd>  to run terminal commands", style="dim"),
-    )
-    info.add_row(
-        Text("  help     ", style="dim"),
-        Text("/help  for all commands", style="dim"),
-    )
-
+    meta = Table.grid(padding=(0, 1))
+    meta.add_row(Text("  workspace", style=_DIM), Text(str(config.WORKSPACE), style=_A2))
+    meta.add_row(Text("  model    ", style=_DIM), Text(config.OLLAMA_MODEL,   style=f"bold {_A1}"))
+    meta.add_row(Text("", style=""), Text("", style=""))
+    meta.add_row(Text("  ! <cmd>  ", style=_DIM), Text("shell command",       style=_DIM))
+    meta.add_row(Text("  @file    ", style=_DIM), Text("inject file context", style=_DIM))
+    meta.add_row(Text("  /help    ", style=_DIM), Text("all commands",        style=_DIM))
     console.print()
     console.print(Panel(
-        Columns([logo, info], padding=(0, 4), equal=False),
-        border_style="dim",
-        padding=(0, 1),
-        subtitle="[dim]local AI coding agent[/dim]",
+        Columns([_logo(), meta], padding=(0, 6), equal=False),
+        border_style=_A4, padding=(0, 1),
+        title=f"[{_A3}] ◆ foder [/{_A3}]", title_align="left",
+        subtitle=f"[{_DIM}]v0.1.0 · local AI coding agent[/{_DIM}]", subtitle_align="right",
     ))
     console.print()
 
 
-def _print_status() -> None:
-    """Compact one-line status — shown after /switch or on demand."""
-    console.print(
-        f"  [dim]model[/dim]     [bold white]{config.OLLAMA_MODEL}[/bold white]  "
-        f"[dim]workspace[/dim]  [white]{config.WORKSPACE}[/white]"
-    )
+def _status() -> None:
+    console.print(f"  [{_DIM}]model[/{_DIM}]  [{_A1}]{config.OLLAMA_MODEL}[/{_A1}]  "
+                  f"[{_DIM}]workspace[/{_DIM}]  [{_A2}]{config.WORKSPACE}[/{_A2}]")
 
 
-# ── Model selection ───────────────────────────────────────────────────────────
+# ── Model picker ──────────────────────────────────────────────────────────────
 
-def _pick_model(models: list[str], prompt_text: str = "  pick › ") -> str:
-    table = Table(
-        show_header=True, header_style="dim",
-        box=box.SIMPLE_HEAD, padding=(0, 2),
-    )
-    table.add_column("#",     style="dim",  width=4, justify="right")
-    table.add_column("model", style="white")
-    table.add_column("",      style="dim", width=3)
-
+def _pick_model(models: list[str]) -> str:
+    table = Table(show_header=True, header_style=_DIM, box=box.SIMPLE_HEAD, padding=(0, 2))
+    table.add_column("#", style=_DIM, width=4, justify="right")
+    table.add_column("model", style=_A2)
+    table.add_column("", style=_A3, width=2)
     for i, name in enumerate(models, 1):
-        active = name == config.OLLAMA_MODEL
-        table.add_row(str(i), name, "●" if active else "")
-
+        table.add_row(str(i), name, "◆" if name == config.OLLAMA_MODEL else "")
     console.print(table)
-
     while True:
         try:
-            raw = input(prompt_text).strip()
+            raw = input("  pick › ").strip()
         except (EOFError, KeyboardInterrupt):
-            console.print("\n[dim]bye.[/dim]")
             sys.exit(0)
         if raw.isdigit() and 1 <= int(raw) <= len(models):
             return models[int(raw) - 1]
         if raw in models:
             return raw
-        console.print(f"  [yellow]enter a number between 1 and {len(models)}[/yellow]")
+        console.print(f"  [yellow]enter 1–{len(models)}[/yellow]")
 
 
 def _select_model() -> None:
-    with console.status("[dim]  connecting to Ollama...[/dim]", spinner="dots", spinner_style="white"):
+    with console.status(f"[{_DIM}]  connecting to Ollama...[/{_DIM}]",
+                        spinner="dots2", spinner_style=_A3):
         try:
             models = list_models()
         except LLMError as e:
             console.print()
-            console.print(Panel(
-                f"[red]{e}[/red]",
-                title="[red]● connection error[/red]",
-                border_style="red",
-            ))
+            console.print(Panel(f"[red]{e}[/red]", title="[red]connection error[/red]", border_style="red"))
             sys.exit(1)
-
     if not models:
         console.print(Panel(
-            "[yellow]No models found in Ollama.[/yellow]\n\n"
-            "Pull one first:\n  [bold white]ollama pull qwen2.5-coder:7b[/bold white]",
-            title="[yellow]no models[/yellow]",
-            border_style="yellow",
-        ))
+            f"[yellow]No models found.[/yellow]\n\nPull one:\n  [{_A2}]ollama pull qwen2.5-coder:7b[/{_A2}]",
+            title="[yellow]no models[/yellow]", border_style="yellow"))
         sys.exit(1)
-
     if config.OLLAMA_MODEL in models:
         return
-
     console.print(Panel(
-        f"Model [white]{config.OLLAMA_MODEL}[/white] not found locally.\n"
-        "[dim]Select one of the available models below:[/dim]",
-        border_style="yellow",
-        padding=(0, 1),
-    ))
+        f"[{_A2}]{config.OLLAMA_MODEL}[/{_A2}] not found.\n[{_DIM}]Select a model:[/{_DIM}]",
+        border_style=_A4, padding=(0, 1)))
     console.print()
-    chosen = _pick_model(models)
-    config.OLLAMA_MODEL = chosen
-    console.print(f"\n  [dim]using[/dim] [bold white]{config.OLLAMA_MODEL}[/bold white]\n")
+    config.OLLAMA_MODEL = _pick_model(models)
+    console.print(f"\n  [{_DIM}]using[/{_DIM}] [{_A1}]{config.OLLAMA_MODEL}[/{_A1}]\n")
 
 
-# ── Shell execution ───────────────────────────────────────────────────────────
+# ── Shell ─────────────────────────────────────────────────────────────────────
+
+_RISKY = ("sudo ","apt ","apt-get ","pip install","npm install","yarn add",
+          "rm ","mv ","chmod ","chown ","curl ","wget ","systemctl","service ","kill ","pkill ")
+
+def _confirm(prompt: str) -> bool:
+    try:
+        return input(f"  {prompt} [y/N] ").strip().lower() in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        return False
+
 
 def _run_shell(command: str) -> None:
     global _cwd
     command = command.strip()
-
     if not command:
-        console.print(f"  [dim]cwd →[/dim] [white]{_cwd}[/white]")
+        console.print(f"  [{_DIM}]cwd →[/{_DIM}] [{_A2}]{_cwd}[/{_A2}]")
         return
-
-    # cd handled in-process
     if command == "cd" or command.startswith(("cd ", "cd\t")):
-        parts = command.split(None, 1)
+        parts  = command.split(None, 1)
         target = parts[1] if len(parts) > 1 else str(Path.home())
-        new_path = (
-            (_cwd / target).resolve()
-            if not Path(target).is_absolute()
-            else Path(target).resolve()
-        )
-        if new_path.is_dir():
-            _cwd = new_path
-            config.WORKSPACE = new_path
-            console.print(f"  [dim]cwd →[/dim] [white]{_cwd}[/white]")
+        new    = (_cwd / target).resolve() if not Path(target).is_absolute() else Path(target).resolve()
+        if new.is_dir():
+            _cwd = new; config.WORKSPACE = new
+            console.print(f"  [{_DIM}]cwd →[/{_DIM}] [{_A2}]{_cwd}[/{_A2}]")
         else:
-            console.print(f"  [red]cd: no such directory:[/red] {target}")
+            console.print(f"  [red]no such directory:[/red] {target}")
         return
-
     try:
         validate_command(command)
     except SecurityError as e:
-        console.print(Panel(f"[red]{e}[/red]", title="[red]● blocked[/red]", border_style="red"))
+        console.print(Panel(f"[red]{e}[/red]", title="[red]blocked[/red]", border_style="red"))
         return
+    cmd_lower = command.lower()
+    if any(cmd_lower.startswith(p) or f" {p}" in cmd_lower for p in _RISKY):
+        console.print(f"  [yellow]risky:[/yellow] {command}")
+        if not _confirm("run anyway?"):
+            console.print(f"  [{_DIM}]cancelled[/{_DIM}]"); return
 
-    # Header
-    console.print(Rule(
-        f"[dim]$ {command}[/dim]",
-        style="dim",
-        align="left",
-    ))
-
-    proc = None
-    start = time.monotonic()
+    console.print(Rule(f"[{_DIM}]$ {command}[/{_DIM}]", style=_A5, align="left"))
+    proc = None; start = time.monotonic()
     try:
-        proc = subprocess.Popen(
-            command, shell=True, cwd=str(_cwd),
-            stdout=sys.stdout, stderr=sys.stderr, text=True,
-        )
+        proc = subprocess.Popen(command, shell=True, cwd=str(_cwd),
+                                stdout=sys.stdout, stderr=sys.stderr, text=True)
         proc.wait(timeout=config.SHELL_TIMEOUT)
         elapsed = time.monotonic() - start
         code = proc.returncode
-
         if code in (0, None):
-            console.print(Rule(
-                f"[dim]✓ done[/dim] [dim]({elapsed:.2f}s)[/dim]",
-                style="dim",
-                align="left",
-            ))
+            console.print(Rule(f"[{_DIM}]✓  {elapsed:.2f}s[/{_DIM}]", style=_A5, align="left"))
         else:
-            console.print(Rule(
-                f"[dim red]✗ exit {code}[/dim red] [dim]({elapsed:.2f}s)[/dim]",
-                style="dim",
-                align="left",
-            ))
-
+            console.print(Rule(f"[red]✗  exit {code}  ({elapsed:.2f}s)[/red]", style="red", align="left"))
     except subprocess.TimeoutExpired:
-        if proc:
-            proc.kill()
-            proc.wait()
-        console.print(Rule(
-            f"[yellow]⏱ timed out after {config.SHELL_TIMEOUT}s[/yellow]",
-            style="yellow", align="left",
-        ))
+        elapsed = time.monotonic() - start
+        console.print(f"\n  [yellow]still running after {elapsed:.0f}s[/yellow]")
+        if _confirm("terminate?"):
+            if proc: proc.kill(); proc.wait()
+            console.print(Rule(f"[{_DIM}]terminated[/{_DIM}]", style=_A5, align="left"))
+        else:
+            console.print(f"  [{_DIM}]left running[/{_DIM}]")
     except KeyboardInterrupt:
-        if proc:
-            proc.kill()
-            proc.wait()
-        console.print(Rule("[dim]interrupted[/dim]", style="dim", align="left"))
+        if proc: proc.kill(); proc.wait()
+        console.print(Rule(f"[{_DIM}]interrupted[/{_DIM}]", style=_A5, align="left"))
     except Exception as e:
         console.print(f"  [red]error:[/red] {e}")
 
 
-# ── Tool call display ─────────────────────────────────────────────────────────
+# ── Tool display + undo ───────────────────────────────────────────────────────
+
+_TOOL_LABEL = {"file_read": "read", "file_write": "write", "dir_list": "list", "shell_exec": "exec"}
+
 
 def _on_tool_call(tool_name: str, parameters: dict) -> None:
-    icons = {
-        "file_read":  "[dim]~[/dim]",
-        "file_write": "[dim]+[/dim]",
-        "dir_list":   "[dim]>[/dim]",
-        "shell_exec": "[dim]$[/dim]",
-    }
-    icon = icons.get(tool_name, "[dim]*[/dim]")
-    param_hint = ""
+    label = _TOOL_LABEL.get(tool_name, tool_name)
+    hint  = ""
     if "path" in parameters:
-        param_hint = f" [dim]{parameters['path']}[/dim]"
+        hint = parameters["path"]
+        if tool_name == "file_write":
+            try:
+                from foder.security import validate_path
+                target = validate_path(parameters["path"])
+                before = target.read_bytes() if target.exists() else b""
+                _undo_store[str(target)] = before
+                _last_write.update({"path": str(target), "before": before,
+                                    "after": parameters.get("content", "").encode()})
+            except Exception:
+                pass
     elif "command" in parameters:
-        short = parameters["command"][:55]
-        ellipsis = "…" if len(parameters["command"]) > 55 else ""
-        param_hint = f" [dim]{short}{ellipsis}[/dim]"
-    console.print(f"  {icon} [white]{tool_name}[/white]{param_hint}")
+        short = parameters["command"][:60]
+        hint  = short + ("…" if len(parameters["command"]) > 60 else "")
+
+    t = Text()
+    t.append("  ▸ ", style=_A4)
+    t.append(label, style=_A2)
+    if hint:
+        t.append("  " + hint, style=_DIM)
+    console.print(t)
+
+
+# ── Auto-run ──────────────────────────────────────────────────────────────────
+
+def _auto_run() -> None:
+    cwd = _cwd
+    for marker, cmd in [
+        (cwd/"package.json", "npm start"), (cwd/"Cargo.toml", "cargo run"),
+        (cwd/"go.mod", "go run ."),        (cwd/"Makefile", "make"),
+        (cwd/"manage.py", "python manage.py runserver"),
+    ]:
+        if marker.exists():
+            console.print(f"  [{_DIM}]→[/{_DIM}] [{_A2}]{cmd}[/{_A2}]")
+            _run_shell(cmd); return
+    py = list(cwd.glob("*.py"))
+    if py:
+        f = (cwd/"main.py") if (cwd/"main.py").exists() else py[0]
+        cmd = f"python {f.name}"
+        console.print(f"  [{_DIM}]→[/{_DIM}] [{_A2}]{cmd}[/{_A2}]")
+        _run_shell(cmd); return
+    c = list(cwd.glob("*.c"))
+    if c:
+        cmd = f"gcc {c[0].name} -o {c[0].stem} && ./{c[0].stem}"
+        console.print(f"  [{_DIM}]→[/{_DIM}] [{_A2}]{cmd}[/{_A2}]")
+        _run_shell(cmd); return
+    console.print(f"  [{_DIM}]cannot detect project type - use[/{_DIM}] [{_A2}]! <cmd>[/{_A2}]")
+
+
+# ── Git context ───────────────────────────────────────────────────────────────
+
+def _get_git_context() -> str:
+    try:
+        import subprocess as _sp
+        branch = _sp.check_output(["git","rev-parse","--abbrev-ref","HEAD"],
+                                   cwd=str(_cwd), stderr=_sp.DEVNULL, timeout=3).decode().strip()
+        status = _sp.check_output(["git","status","--short"],
+                                   cwd=str(_cwd), stderr=_sp.DEVNULL, timeout=3).decode().strip()
+        last   = _sp.check_output(["git","log","--oneline","-1"],
+                                   cwd=str(_cwd), stderr=_sp.DEVNULL, timeout=3).decode().strip()
+        parts  = [f"git branch: {branch}"]
+        if last:   parts.append(f"last commit: {last}")
+        if status: parts.append(f"changed files: {len(status.splitlines())}")
+        return "  ".join(parts)
+    except Exception:
+        return ""
 
 
 # ── Slash commands ────────────────────────────────────────────────────────────
@@ -288,132 +510,209 @@ def _handle_slash(cmd: str, history: list[dict]) -> tuple[bool, list[dict]]:
     arg   = parts[1] if len(parts) > 1 else ""
 
     if verb in ("/exit", "/quit"):
-        _save_session(history)
-        unload_model()
-        _print_exit(history, _session_start)
-        sys.exit(0)
+        _save_session(history); unload_model(); _print_exit(history, _session_start); sys.exit(0)
 
     if verb == "/clear":
-        history.clear()
-        _save_session([])
-        sys.stdout.write("\033[2J\033[H")
-        sys.stdout.flush()
-        _print_banner()
-        return True, history
+        history.clear(); _save_session([])
+        sys.stdout.write("\033[2J\033[H"); sys.stdout.flush()
+        _print_banner(); return True, history
 
     if verb == "/workspace":
-        console.print(f"  [white]{config.WORKSPACE}[/white]")
+        console.print(f"  [{_A2}]{config.WORKSPACE}[/{_A2}]"); return True, history
+
+    if verb == "/last":
+        if not _last_response:
+            console.print(f"  [{_DIM}]no previous response[/{_DIM}]")
+        else:
+            is_md = any(c in _last_response for c in ("```", "**", "##", "\n- ", "\n* ", "\n1."))
+            label = Text(); label.append("  ◆ ", style=_A3); label.append("foder", style=_A1)
+            if is_md:
+                console.print(label); console.print()
+                console.print(Panel(Markdown(_last_response), border_style=_A5, padding=(1, 2)))
+            else:
+                console.print(label, end="  "); console.print(_last_response)
         return True, history
 
     if verb == "/model":
-        console.print(f"  [bold white]{config.OLLAMA_MODEL}[/bold white]")
-        return True, history
+        console.print(f"  [bold {_A1}]{config.OLLAMA_MODEL}[/bold {_A1}]"); return True, history
 
     if verb == "/models":
         try:
             models = list_models()
         except LLMError as e:
-            console.print(f"  [red]{e}[/red]")
-            return True, history
+            console.print(f"  [red]{e}[/red]"); return True, history
         table = Table(show_header=False, box=box.SIMPLE, padding=(0, 2))
         for name in models:
             active = name == config.OLLAMA_MODEL
-            table.add_row(
-                Text("●" if active else " ", style="white" if active else "dim"),
-                Text(name, style="bold white" if active else "white"),
-            )
-        console.print(table)
-        return True, history
+            table.add_row(Text("◆" if active else " ", style=_A3 if active else _DIM),
+                          Text(name, style=f"bold {_A1}" if active else _A2))
+        console.print(table); return True, history
 
     if verb == "/switch":
         try:
             models = list_models()
         except LLMError as e:
-            console.print(f"  [red]{e}[/red]")
-            return True, history
+            console.print(f"  [red]{e}[/red]"); return True, history
         if arg and arg in models:
-            config.OLLAMA_MODEL = arg
-            console.print(f"  [dim]switched →[/dim] [bold white]{config.OLLAMA_MODEL}[/bold white]")
-            _print_status()
+            config.OLLAMA_MODEL = arg; _status(); return True, history
+        console.print(f"  [{_DIM}]select a model:[/{_DIM}]\n")
+        config.OLLAMA_MODEL = _pick_model(models)
+        console.print(); _status(); return True, history
+
+    if verb == "/theme":
+        if arg and arg in THEMES:
+            _apply_theme(arg); _save_theme(arg)
+            console.print(f"  [{_DIM}]theme →[/{_DIM}] [{_A2}]{THEMES[arg]['name']}[/{_A2}]")
             return True, history
-        console.print("[dim]  select a model:[/dim]\n")
-        chosen = _pick_model(models)
-        config.OLLAMA_MODEL = chosen
-        console.print()
-        _print_status()
+        key = _pick_theme()
+        _apply_theme(key); _save_theme(key)
+        console.print(f"\n  [{_DIM}]theme →[/{_DIM}] [{_A2}]{THEMES[key]['name']}[/{_A2}]")
         return True, history
+
+    if verb == "/undo":
+        if not _last_write.get("path"):
+            console.print(f"  [{_DIM}]nothing to undo[/{_DIM}]"); return True, history
+        path   = _last_write["path"]
+        before = _undo_store.get(path, b"")
+        try:
+            p = Path(path)
+            if before:
+                p.write_bytes(before)
+                console.print(f"  [{_A2}]restored[/{_A2}]  [{_DIM}]{path}[/{_DIM}]")
+            else:
+                p.unlink(missing_ok=True)
+                console.print(f"  [{_A2}]deleted[/{_A2}]  [{_DIM}]{path}[/{_DIM}]")
+            _undo_store.pop(path, None); _last_write.clear()
+        except Exception as e:
+            console.print(f"  [red]undo failed:[/red] {e}")
+        return True, history
+
+    if verb == "/diff":
+        if not _last_write.get("path"):
+            console.print(f"  [{_DIM}]no recent write[/{_DIM}]"); return True, history
+        before = _last_write["before"].decode("utf-8", errors="replace").splitlines(keepends=True)
+        after  = _last_write["after"].decode("utf-8", errors="replace").splitlines(keepends=True)
+        diff   = list(difflib.unified_diff(before, after, fromfile="before", tofile="after", lineterm=""))
+        if not diff:
+            console.print(f"  [{_DIM}]no changes[/{_DIM}]"); return True, history
+        out = Text()
+        for line in diff[:80]:
+            if   line.startswith("+") and not line.startswith("+++"): out.append(line+"\n", style=_OK)
+            elif line.startswith("-") and not line.startswith("---"): out.append(line+"\n", style=_ERR)
+            elif line.startswith("@@"):                                out.append(line+"\n", style=_A2)
+            else:                                                      out.append(line+"\n", style=_DIM)
+        console.print(Panel(out, border_style=_A5,
+                            title=f"[{_DIM}]{_last_write['path']}[/{_DIM}]", padding=(0,1)))
+        return True, history
+
+    if verb == "/run":
+        _auto_run(); return True, history
 
     if verb == "/help":
         console.print()
-        console.print(Rule("[dim]commands[/dim]", style="dim"))
-        t1 = Table(show_header=False, box=None, padding=(0, 2))
-        for c, desc in _COMMANDS.items():
-            t1.add_row(Text(c, style="bold white"), Text(desc, style="dim"))
-        console.print(t1)
-
+        console.print(Rule(f"[{_DIM}]  commands  [/{_DIM}]", style=_A5))
+        t = Table(show_header=False, box=None, padding=(0, 2))
+        for c, d in _COMMANDS.items():
+            t.add_row(Text(c, style=f"bold {_A2}"), Text(d, style=_DIM))
+        console.print(t)
         console.print()
-        console.print(Rule("[dim]shell[/dim]", style="dim"))
-        t2 = Table(show_header=False, box=None, padding=(0, 2))
-        t2.add_row(Text("! <cmd>",     style="bold white"), Text("run a terminal command", style="dim"))
-        t2.add_row(Text("! cd <path>", style="bold white"), Text("change working directory", style="dim"))
-        t2.add_row(Text("!",           style="bold white"), Text("show current directory", style="dim"))
-        console.print(t2)
+        console.print(Rule(f"[{_DIM}]  shortcuts  [/{_DIM}]", style=_A5))
+        s = Table(show_header=False, box=None, padding=(0, 2))
+        s.add_row(Text("! <cmd>",     style=f"bold {_A2}"), Text("run shell command",       style=_DIM))
+        s.add_row(Text("! cd <path>", style=f"bold {_A2}"), Text("change directory",        style=_DIM))
+        s.add_row(Text("@filename",   style=f"bold {_A2}"), Text("inject file into prompt", style=_DIM))
+        console.print(s)
         console.print()
         return True, history
 
-    console.print(f"  [yellow]unknown:[/yellow] {verb}  [dim](try /help)[/dim]")
+    console.print(f"  [yellow]unknown:[/yellow] {verb}  [{_DIM}](try /help)[/{_DIM}]")
     return True, history
 
 
 # ── Prompt ────────────────────────────────────────────────────────────────────
 
+# ── Tab completer ─────────────────────────────────────────────────────────────
+
+class FoderCompleter(Completer):
+    """Tab completion for slash commands and @filenames."""
+
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+
+        if text.startswith("/"):
+            word = text.lstrip("/").lower()
+            for cmd in _COMMANDS:
+                if cmd.lstrip("/").startswith(word):
+                    yield Completion(cmd, start_position=-len(text))
+            return
+
+        at_pos = text.rfind("@")
+        if at_pos != -1:
+            partial = text[at_pos + 1:]
+            try:
+                for p in sorted(_cwd.iterdir()):
+                    if p.name.startswith(partial):
+                        yield Completion(
+                            p.name,
+                            start_position=-len(partial),
+                            display=p.name + ("/" if p.is_dir() else ""),
+                        )
+            except Exception:
+                pass
+
+
 def _prompt_label() -> HTML:
     try:
-        rel = _cwd.relative_to(config.WORKSPACE)
+        rel  = _cwd.relative_to(config.WORKSPACE)
         path = f"foder/{rel}" if str(rel) != "." else "foder"
     except ValueError:
         path = str(_cwd)
-    model_short = config.OLLAMA_MODEL.split(":")[0]   # strip tag for brevity
-    return HTML(
-        f'<style color="#888888">{model_short}</style>'
-        f'<style color="#333333"> │ </style>'
-        f'<prompt>{path} ❯ </prompt>'
-    )
+    model = config.OLLAMA_MODEL.split(":")[0]
+    return HTML(f'<style color="{_DIM}">{model}</style>'
+                f'<style color="{_A5}"> ❙ </style>'
+                f'<prompt>{path} ❯ </prompt>')
 
 
-# ── Response renderer ─────────────────────────────────────────────────────────
+# ── Response renderer - streams live ─────────────────────────────────────────
 
-def _stream_response(token_iter) -> str:
+def _render_response(token_gen) -> str:
+    """
+    Stream tokens to the terminal as they arrive.
+    Collects full text, then re-renders markdown in a panel if needed.
+    Returns the full response string.
+    """
+    global _last_response
+
+    label = Text()
+    label.append("  ◆ ", style=_A3)
+    label.append("foder", style=_A1)
+    console.print(label, end="  ")
+
     collected = []
     try:
-        console.print("  ", end="")
-        for token in token_iter:
+        for token in token_gen:
+            # Print each token immediately - no buffering
             console.print(token, end="", markup=False)
             collected.append(token)
-        console.print()
+        console.print()  # newline after stream ends
     except KeyboardInterrupt:
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-        console.print(Text("  cancelled", style="dim"))
-
-    full = "".join(collected)
-
-    # Re-render markdown in a panel
-    if full and any(c in full for c in ("```", "**", "##", "- ", "* ", "1.")):
         console.print()
-        console.print(Panel(
-            Markdown(full),
-            border_style="dim",
-            padding=(0, 2),
-        ))
+        console.print(Text("  cancelled", style=_DIM))
+
+    full = "".join(collected).strip()
+    _last_response = full  # store for /last
+
+    # If markdown detected, re-render cleanly in a panel below
+    if full and any(c in full for c in ("```", "**", "##", "\n- ", "\n* ", "\n1.")):
+        console.print()
+        console.print(Panel(Markdown(full), border_style=_A5, padding=(1, 2)))
 
     return full
 
 
-# ── Session persistence ───────────────────────────────────────────────────────
+# ── Session ───────────────────────────────────────────────────────────────────
 
 def _load_session() -> list[dict]:
-    """Load last N messages from ~/.foder/session.json. Returns [] on any error."""
     try:
         if _HISTORY_FILE.exists():
             data = json.loads(_HISTORY_FILE.read_text(encoding="utf-8"))
@@ -425,141 +724,131 @@ def _load_session() -> list[dict]:
 
 
 def _save_session(history: list[dict]) -> None:
-    """Persist the last N messages to disk. Silent on failure."""
     try:
         _HISTORY_DIR.mkdir(parents=True, exist_ok=True)
         _HISTORY_FILE.write_text(
-            json.dumps(history[-_MAX_SAVED_MESSAGES:], ensure_ascii=False),
-            encoding="utf-8",
-        )
+            json.dumps(history[-_MAX_SAVED_MESSAGES:], ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
 
 
-# ── @file context injection ───────────────────────────────────────────────────
+# ── @file injection ───────────────────────────────────────────────────────────
 
 def _inject_file_context(user_input: str) -> str:
-    """
-    Replace @filename tokens with the file contents inline.
-    e.g. "@main.py fix the bug" → prepends the file content to the message.
-    Only reads files inside WORKSPACE. Skips files that don't exist or are too large.
-    """
     import re
-    _MAX_INJECT_BYTES = 32_000  # ~32KB per file — keeps context lean
-
     pattern = re.compile(r"@([\w./\-]+)")
     matches = pattern.findall(user_input)
     if not matches:
         return user_input
-
     injected = []
     for ref in matches:
         try:
-            from foder.security import validate_path, SecurityError
+            from foder.security import validate_path
             target = validate_path(ref)
             if not target.is_file():
                 continue
-            content = target.read_bytes()
-            if len(content) > _MAX_INJECT_BYTES:
-                injected.append(f"[{ref} — file too large to inject, use file_read instead]")
+            raw = target.read_bytes()
+            if len(raw) > 32_000:
+                injected.append(f"[{ref} - too large, use file_read]")
                 continue
-            text = content.decode("utf-8", errors="replace")
-            injected.append(f"--- @{ref} ---\n{text}\n--- end {ref} ---")
+            injected.append(f"--- @{ref} ---\n{raw.decode('utf-8', errors='replace')}\n--- end {ref} ---")
         except Exception:
             continue
-
     if not injected:
         return user_input
+    clean = pattern.sub("", user_input).strip()
+    return "\n\n".join(injected) + f"\n\n{clean}"
 
-    context_block = "\n\n".join(injected)
-    # Strip the @refs from the message and prepend the file contents
-    clean_input = pattern.sub("", user_input).strip()
-    return f"{context_block}\n\n{clean_input}"
+
+# ── Exit screen ───────────────────────────────────────────────────────────────
+
+def _print_exit(history: list[dict], start_time: float) -> None:
+    import datetime
+    elapsed  = time.monotonic() - start_time
+    mins, secs = int(elapsed // 60), int(elapsed % 60)
+    duration = f"{mins}m {secs}s" if mins else f"{secs}s"
+    turns    = sum(1 for m in history if m["role"] == "user" and not m["content"].startswith("[tool:"))
+    now      = datetime.datetime.now().strftime("%H:%M")
+    grid = Table.grid(padding=(0, 4))
+    grid.add_row(Text("  ended    ", style=_DIM), Text(now,                 style=_A1))
+    grid.add_row(Text("  duration ", style=_DIM), Text(duration,            style=_A1))
+    grid.add_row(Text("  messages ", style=_DIM), Text(str(turns),          style=_A1))
+    grid.add_row(Text("  model    ", style=_DIM), Text(config.OLLAMA_MODEL, style=_A2))
+    console.print()
+    console.print(Panel(grid, border_style=_A4, padding=(0, 2),
+                        title=f"[{_A3}] ◆ foder [/{_A3}]", title_align="left",
+                        subtitle=f"[{_DIM}]session saved · model unloaded[/{_DIM}]", subtitle_align="right"))
+    console.print()
 
 
 # ── Main REPL ─────────────────────────────────────────────────────────────────
 
-def _print_exit(history: list[dict], start_time: float) -> None:
-    """A proper goodbye — session stats + farewell."""
-    import datetime
-
-    elapsed   = time.monotonic() - start_time
-    minutes   = int(elapsed // 60)
-    seconds   = int(elapsed % 60)
-    duration  = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
-
-    # Count only user turns (not tool result injections)
-    turns = sum(1 for m in history if m["role"] == "user" and not m["content"].startswith("[tool:"))
-
-    now = datetime.datetime.now().strftime("%H:%M")
-
-    grid = Table.grid(padding=(0, 3))
-    grid.add_row(
-        Text("session ended", style="dim"),
-        Text(now, style="white"),
-    )
-    grid.add_row(
-        Text("duration     ", style="dim"),
-        Text(duration, style="white"),
-    )
-    grid.add_row(
-        Text("messages     ", style="dim"),
-        Text(str(turns), style="white"),
-    )
-    grid.add_row(
-        Text("model        ", style="dim"),
-        Text(config.OLLAMA_MODEL, style="white"),
-    )
-
-    console.print()
-    console.print(Panel(
-        grid,
-        border_style="#333333",
-        padding=(0, 2),
-        title="[dim]foder[/dim]",
-        title_align="left",
-        subtitle="[dim]session saved · model unloaded[/dim]",
-    ))
-    console.print()
-
-
 def main() -> None:
-    global _cwd
+    global _cwd, _session_start, _last_shell_cmd
+
+    # ── CLI argument mode - foder "do something" ──────────────────────────
+    if len(sys.argv) > 1:
+        prompt = " ".join(sys.argv[1:])
+        config.load_project_config()
+        _apply_theme(_load_theme())
+        _select_model()
+        _cwd = config.WORKSPACE
+        history: list[dict] = []
+        token_gen, _ = run(prompt, history, on_tool_call=_on_tool_call)
+        for token in token_gen:
+            sys.stdout.write(token)
+            sys.stdout.flush()
+        sys.stdout.write("\n")
+        return
+
     config.load_project_config()
     _select_model()
     _cwd = config.WORKSPACE
     _print_banner()
 
-    session: PromptSession = PromptSession(
-        history=InMemoryHistory(),
+    # Persist prompt history across sessions for Ctrl+R search
+    _HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    session = PromptSession(
+        history=FileHistory(str(_PROMPT_HISTORY)),
         style=_PROMPT_STYLE,
+        completer=FoderCompleter(),
+        complete_while_typing=False,   # only complete on Tab
     )
 
     conversation_history: list[dict] = _load_session()
     if conversation_history:
-        console.print(f"  [dim]resumed {len(conversation_history)} messages from last session[/dim]\n")
+        console.print(f"  [{_A3}]◆[/{_A3}] [{_DIM}]resumed {len(conversation_history)} messages[/{_DIM}]\n")
 
-    session_start = time.monotonic()
-    global _session_start
-    _session_start = session_start
+    _session_start = time.monotonic()
 
     while True:
         try:
             user_input = session.prompt(_prompt_label, style=_PROMPT_STYLE)
         except (EOFError, KeyboardInterrupt):
             _save_session(conversation_history)
-            unload_model()
-            _print_exit(conversation_history, session_start)
+            _print_exit(conversation_history, _session_start)
             break
 
         user_input = user_input.strip()
         if not user_input:
             continue
 
+        # ── !! re-run last shell command ───────────────────────────────────
+        if user_input == "!!":
+            if not _last_shell_cmd:
+                console.print(f"  [{_DIM}]no previous command[/{_DIM}]\n")
+            else:
+                console.print()
+                _run_shell(_last_shell_cmd)
+                console.print()
+            continue
+
         # ── Shell passthrough ──────────────────────────────────────────────
         if user_input.startswith("!"):
+            cmd = user_input[1:].strip()
+            _last_shell_cmd = cmd   # save for !!
             console.print()
-            _run_shell(user_input[1:].strip())
+            _run_shell(cmd)
             console.print()
             continue
 
@@ -570,56 +859,51 @@ def main() -> None:
             console.print()
             continue
 
-        # ── @file context injection ────────────────────────────────────────
-        resolved_input = _inject_file_context(user_input)
+        # ── @file injection ────────────────────────────────────────────────
+        resolved = _inject_file_context(user_input)
 
         # ── Agent turn ─────────────────────────────────────────────────────
         console.print()
-        console.print(Panel(
-            Text(user_input, style="white"),   # show original, not injected
-            border_style="#333333",
-            padding=(0, 1),
-            title="[dim]you[/dim]",
-            title_align="left",
-        ))
+        you = Text()
+        you.append("  you  ", style=f"bold {_A2}")
+        you.append(user_input, style="white")
+        console.print(you)
+        console.print(Rule(style=_A5))
         console.print()
 
+        # Show thinking indicator, then stream response live
+        # Tool calls print via _on_tool_call during the run() call
+        console.print(Text("  ◆ thinking...", style=_DIM), end="\r")
+
         try:
-            token_iter, conversation_history = run(
-                resolved_input,
-                conversation_history,
-                on_tool_call=_on_tool_call,
-            )
+            token_gen, conversation_history = run(
+                resolved, conversation_history, on_tool_call=_on_tool_call)
         except KeyboardInterrupt:
-            console.print(Text("\n  cancelled", style="dim"))
+            console.print(Text("  cancelled", style=_DIM))
             continue
 
-        console.print(Text("  foder", style="bold white"), end="  ")
-        full = _stream_response(token_iter)
+        # Clear the thinking line before streaming
+        console.print(" " * 30, end="\r")
 
-        # Save after every turn — lightweight, only last 20 messages
+        full = _render_response(token_gen)
         _save_session(conversation_history)
 
         if full.strip().startswith("[llm error]"):
             msg = full.strip()
             if "timed out" in msg:
-                hint = (
-                    f"[yellow]Ollama timed out.[/yellow]\n\n"
-                    f"  The model took longer than [white]{config.LLM_TIMEOUT:.0f}s[/white].\n\n"
-                    f"  [dim]Try a faster model →[/dim]  /switch\n"
-                    f"  [dim]Raise the limit    →[/dim]  FODER_LLM_TIMEOUT=600 foder"
-                )
+                hint = (f"[yellow]Ollama timed out.[/yellow]\n\n"
+                        f"  [{_DIM}]took longer than[/{_DIM}] [{_A2}]{config.LLM_TIMEOUT:.0f}s[/{_A2}]\n\n"
+                        f"  [{_DIM}]try smaller tasks  →[/{_DIM}]  e.g. 'make index.html' then 'make style.css'\n"
+                        f"  [{_DIM}]faster model       →[/{_DIM}]  /switch\n"
+                        f"  [{_DIM}]raise limit        →[/{_DIM}]  FODER_LLM_TIMEOUT=900 foder")
             elif "Cannot connect" in msg:
-                hint = (
-                    "[yellow]Cannot reach Ollama.[/yellow]\n\n"
-                    "  [dim]Start it with:[/dim]  [bold]ollama serve[/bold]"
-                )
+                hint = "[yellow]Cannot reach Ollama.[/yellow]\n\n  ollama serve"
             else:
                 hint = f"[yellow]{msg}[/yellow]"
             console.print(Panel(hint, border_style="yellow", padding=(0, 1)))
 
         console.print()
-        console.print(Rule(style="#1a1a1a"))
+        console.print(Rule(style=_A5))
         console.print()
 
 

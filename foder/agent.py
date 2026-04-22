@@ -1,39 +1,73 @@
 """
-Agent loop — single-pass streaming.
+Agent loop - streaming-first with smart history management.
 
-Each LLM call streams tokens. If the full response is a tool call JSON,
-execute the tool and loop. Otherwise yield the tokens directly to the UI —
-no second request, no wasted memory.
+Design:
+- Tool call iterations: collect full response synchronously (reliable JSON parsing)
+- Final answer: stream tokens live to the caller (fast, responsive)
+- History: only last 6 messages sent per request (keeps requests lean)
+- Tool results: truncated to 500 chars in history (prevents bloat)
 """
 
 import json
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Generator
 from foder.llm import chat_stream, LLMError
 from foder.prompt import build_messages
 from foder.tools.registry import dispatch
 from foder.config import MAX_ITERATIONS
 
-_MAX_HISTORY_MESSAGES = 30  # tighter cap = less RAM
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+_TOOL_RESULT_MAX_CHARS = 500   # truncate tool results stored in history
+_RECENT_TURNS          = 6     # messages to include per LLM request
+_MAX_HISTORY_MESSAGES  = 40    # hard cap on in-memory history
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
-_JSON_BARE_RE  = re.compile(r"(\{[^{}]*\"tool\"[^{}]*\})", re.DOTALL)
 
-# If response is shorter than this it might be a tool call — buffer it fully
-_TOOL_CALL_MAX_LEN = 512
 
+# ── Tool call detection ───────────────────────────────────────────────────────
 
 def _extract_tool_call(text: str) -> dict | None:
+    """Parse a tool call JSON from model output. Handles fenced, bare, and indented JSON."""
+    decoder = json.JSONDecoder()
+    text    = text.strip()
+
+    # Fenced code block
     match = _JSON_FENCE_RE.search(text)
-    if not match:
-        match = _JSON_BARE_RE.search(text)
-    if not match:
+    if match:
+        try:
+            data = json.loads(match.group(1))
+            if "tool" in data and "parameters" in data:
+                return data
+        except json.JSONDecodeError:
+            pass
+
+    # Bare or preamble JSON - find first { and decode forward
+    start = text.find("{")
+    if start == -1:
         return None
     try:
-        data = json.loads(match.group(1))
+        data, _ = decoder.raw_decode(text, start)
+        if isinstance(data, dict) and "tool" in data and "parameters" in data:
+            return data
     except json.JSONDecodeError:
-        return None
-    return data if ("tool" in data and "parameters" in data) else None
+        pass
+
+    return None
+
+
+def _is_tool_call(text: str) -> bool:
+    """Quick check - does this text contain a tool call?"""
+    return '"tool"' in text and '"parameters"' in text
+
+
+# ── History management ────────────────────────────────────────────────────────
+
+def _truncate_tool_result(content: str) -> str:
+    """Trim large tool results so they don't bloat future requests."""
+    if len(content) <= _TOOL_RESULT_MAX_CHARS:
+        return content
+    return "...[truncated]\n" + content[-_TOOL_RESULT_MAX_CHARS:]
 
 
 def _trim_history(history: list[dict]) -> list[dict]:
@@ -42,79 +76,91 @@ def _trim_history(history: list[dict]) -> list[dict]:
     return history[-_MAX_HISTORY_MESSAGES:]
 
 
+def _build_messages(history: list[dict]) -> list[dict]:
+    """
+    Send only the most recent messages to keep requests fast.
+    Always includes system prompt + last _RECENT_TURNS messages.
+    """
+    recent = history[-_RECENT_TURNS:] if len(history) > _RECENT_TURNS else history
+    return build_messages(recent)
+
+
+# ── Agent loop ────────────────────────────────────────────────────────────────
+
 def run(
     user_input: str,
     history: list[dict],
     on_tool_call: callable = None,
-) -> tuple[Iterator[str], list[dict]]:
+) -> tuple[Generator[str, None, None], list[dict]]:
     """
     Run the agent loop for a single user turn.
-    Returns (token_iterator, updated_history).
-    The token_iterator streams the final answer — no double requests.
+
+    Returns (token_generator, updated_history).
+
+    Tool call iterations collect the full response synchronously so JSON
+    parsing is reliable. The final answer streams live token by token.
     """
     history.append({"role": "user", "content": user_input})
     history = _trim_history(history)
 
     for _ in range(MAX_ITERATIONS):
-        messages = build_messages(history)
+        messages = _build_messages(history)
 
         try:
-            tokens = list(_collect_stream(chat_stream(messages)))
+            # Collect full response - needed to reliably detect tool calls
+            tokens = []
+            for token in chat_stream(messages):
+                tokens.append(token)
+            raw = "".join(tokens)
         except LLMError as e:
             msg = str(e)
             if "[interrupted]" in msg:
                 history.append({"role": "assistant", "content": "[interrupted]"})
                 return _single("cancelled"), history
-            error_msg = f"[llm error] {msg}"
-            history.append({"role": "assistant", "content": error_msg})
-            return _single(error_msg), history
+            err = f"[llm error] {msg}"
+            history.append({"role": "assistant", "content": err})
+            return _single(err), history
         except KeyboardInterrupt:
             history.append({"role": "assistant", "content": "[interrupted]"})
             return _single("cancelled"), history
 
-        raw_response = "".join(tokens)
-
-        # Only try tool call detection on short responses
-        tool_call = None
-        if len(raw_response) <= _TOOL_CALL_MAX_LEN:
-            tool_call = _extract_tool_call(raw_response)
+        # Check if this is a tool call
+        tool_call = _extract_tool_call(raw) if _is_tool_call(raw) else None
 
         if tool_call is None:
-            # Final answer — stream the already-collected tokens
-            history.append({"role": "assistant", "content": raw_response})
-            return iter(tokens), history
+            # Final answer - stream the collected tokens
+            history.append({"role": "assistant", "content": raw})
+            return _stream_tokens(tokens), history
 
-        # Tool call
+        # Execute tool call
         tool_name  = tool_call["tool"]
         parameters = tool_call.get("parameters", {})
 
         if on_tool_call:
             on_tool_call(tool_name, parameters)
 
-        tool_result = dispatch(tool_name, parameters)
+        result        = dispatch(tool_name, parameters)
+        stored_result = _truncate_tool_result(result)
 
         tool_turn = (
             f"[tool: {tool_name}]\n"
             f"parameters: {json.dumps(parameters)}\n"
-            f"result:\n{tool_result}"
+            f"result:\n{stored_result}"
         )
 
-        history.append({"role": "assistant", "content": raw_response})
+        history.append({"role": "assistant", "content": raw})
         history.append({"role": "user",      "content": tool_turn})
 
-        # Free the token list — no longer needed
-        del tokens
-
-    timeout_msg = f"[agent] Reached max iterations ({MAX_ITERATIONS})."
-    history.append({"role": "assistant", "content": timeout_msg})
-    return _single(timeout_msg), history
+    timeout = f"[agent] Reached max iterations ({MAX_ITERATIONS})."
+    history.append({"role": "assistant", "content": timeout})
+    return _single(timeout), history
 
 
-def _collect_stream(stream: Iterator[str]) -> Iterator[str]:
-    """Pass-through iterator — yields tokens and lets KeyboardInterrupt propagate."""
-    for token in stream:
-        yield token
+def _stream_tokens(tokens: list[str]) -> Generator[str, None, None]:
+    """Yield pre-collected tokens one by one - simulates streaming for the UI."""
+    for t in tokens:
+        yield t
 
 
-def _single(text: str) -> Iterator[str]:
+def _single(text: str) -> Generator[str, None, None]:
     yield text

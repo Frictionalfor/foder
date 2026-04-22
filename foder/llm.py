@@ -74,6 +74,7 @@ def chat_stream(messages: list[dict]) -> Iterator[str]:
         "model": config.OLLAMA_MODEL,
         "messages": messages,
         "stream": True,
+        "keep_alive": "10m",   # keep model in RAM for 10 min between requests
     }
     try:
         with httpx.stream(

@@ -26,10 +26,11 @@ def execute(command: str) -> str:
         return f"[security error] {e}"
 
     try:
+        cwd = str(config.WORKSPACE) if config.WORKSPACE.exists() else None
         result = subprocess.run(
             command,
             shell=True,
-            cwd=str(config.WORKSPACE),
+            cwd=cwd,
             capture_output=True,
             text=True,
             timeout=config.SHELL_TIMEOUT,

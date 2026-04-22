@@ -7,7 +7,7 @@ WORKSPACE: Path = Path(os.environ.get("FODER_WORKSPACE", Path.cwd())).resolve()
 
 # Ollama settings
 OLLAMA_BASE_URL: str = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL: str    = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:7b")
+OLLAMA_MODEL: str    = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:3b")
 
 # Agent loop limits
 MAX_ITERATIONS: int  = int(os.environ.get("FODER_MAX_ITER", "20"))
@@ -16,7 +16,7 @@ MAX_ITERATIONS: int  = int(os.environ.get("FODER_MAX_ITER", "20"))
 SHELL_TIMEOUT: int   = int(os.environ.get("FODER_SHELL_TIMEOUT", "30"))
 
 # LLM request timeout (seconds)
-LLM_TIMEOUT: float   = float(os.environ.get("FODER_LLM_TIMEOUT", "300"))
+LLM_TIMEOUT: float   = float(os.environ.get("FODER_LLM_TIMEOUT", "600"))
 
 # Custom system prompt suffix (injected at end of system prompt)
 CUSTOM_INSTRUCTIONS: str = os.environ.get("FODER_INSTRUCTIONS", "")
