@@ -11,11 +11,20 @@ import foder.tools.shell_exec as shell_exec
 
 # Map: tool_name -> module
 _REGISTRY = {
-    "file_read":  file_read,
-    "file_write": file_write,
-    "dir_list":   dir_list,
-    "dir_create": dir_create,
-    "shell_exec": shell_exec,
+    "file_read":   file_read,
+    "file_write":  file_write,
+    "dir_list":    dir_list,
+    "dir_create":  dir_create,
+    "shell_exec":  shell_exec,
+    # Aliases — models sometimes use these names
+    "file_create": file_write,
+    "write_file":  file_write,
+    "read_file":   file_read,
+    "create_file": file_write,
+    "bash":        shell_exec,
+    "run":         shell_exec,
+    "mkdir":       dir_create,
+    "list_dir":    dir_list,
 }
 
 # Exported schemas for prompt injection

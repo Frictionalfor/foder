@@ -33,8 +33,14 @@ echo "  Current commit : $CURRENT"
 echo "  Checking for updates..."
 git -C "$REPO_DIR" fetch origin --quiet
 
+BRANCH=$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
 LOCAL=$(git -C "$REPO_DIR" rev-parse HEAD)
-REMOTE=$(git -C "$REPO_DIR" rev-parse origin/main 2>/dev/null || git -C "$REPO_DIR" rev-parse origin/master 2>/dev/null)
+REMOTE=$(git -C "$REPO_DIR" rev-parse "origin/$BRANCH" 2>/dev/null)
+
+if [ -z "$REMOTE" ]; then
+    echo "  [!] Cannot reach remote. Check your internet connection."
+    exit 1
+fi
 
 if [ "$LOCAL" = "$REMOTE" ]; then
     echo "  Already up to date."
@@ -45,14 +51,17 @@ fi
 # ── Show what changed ─────────────────────────────────────────────────────────
 echo ""
 echo "  Updates available:"
-git -C "$REPO_DIR" log --oneline HEAD..origin/main 2>/dev/null || \
-git -C "$REPO_DIR" log --oneline HEAD..origin/master 2>/dev/null
+git -C "$REPO_DIR" log --oneline "HEAD..origin/$BRANCH" 2>/dev/null
 echo ""
-
 # ── Pull ──────────────────────────────────────────────────────────────────────
 echo "  Pulling latest..."
-git -C "$REPO_DIR" pull --rebase origin main 2>/dev/null || \
-git -C "$REPO_DIR" pull --rebase origin master 2>/dev/null
+BRANCH=$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+echo "  Branch: $BRANCH"
+git -C "$REPO_DIR" pull --rebase origin "$BRANCH" 2>/dev/null || \
+git -C "$REPO_DIR" pull origin "$BRANCH" 2>/dev/null || {
+    echo "  [x] Pull failed. Try manually: git pull"
+    exit 1
+}
 
 # ── Reinstall ─────────────────────────────────────────────────────────────────
 echo "  Reinstalling..."

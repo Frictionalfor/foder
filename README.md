@@ -226,15 +226,15 @@ Prompt history persists across sessions — use `Ctrl+R` to search previous inpu
 
 ## Tools
 
-The agent has access to five tools:
+The agent has access to five tools, plus aliases for common model variations:
 
-| Tool | Description |
-|---|---|
-| `file_read` | read a file |
-| `file_write` | write / create a file |
-| `dir_list` | list directory contents |
-| `dir_create` | create a directory |
-| `shell_exec` | run a shell command (sandboxed) |
+| Tool | Aliases | Description |
+|---|---|---|
+| `file_read` | `read_file` | read a file |
+| `file_write` | `file_create`, `write_file`, `create_file` | write / create a file |
+| `dir_list` | `list_dir` | list directory contents |
+| `dir_create` | `mkdir` | create a directory |
+| `shell_exec` | `bash`, `run` | run a shell command (sandboxed) |
 
 ---
 
@@ -303,9 +303,16 @@ foder/
 │       ├── dir_list.py
 │       ├── dir_create.py
 │       ├── shell_exec.py
-│       └── registry.py
+│       └── registry.py    (+ aliases: file_create, bash, mkdir, run...)
+├── website/
+│   ├── DESIGN.md      full website design specification
+│   ├── package.json
+│   ├── vite.config.js
+│   └── src/           (React components)
 ├── test_foder.py      test suite (42 tests)
 ├── run_tests.py       on-site integration test runner
+├── TRY_THIS.md        curated prompts to test foder
+├── CHANGELOG.md       full bug tracker + feature log
 ├── install.sh         Linux/macOS installer
 ├── install.ps1        Windows installer
 ├── update.sh          auto-updater

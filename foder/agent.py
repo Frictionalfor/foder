@@ -171,7 +171,7 @@ def run(
             # Final answer - clean up any leaked tool call JSON before displaying
             clean = _strip_tool_json(raw)
             history.append({"role": "assistant", "content": clean})
-            return _stream_tokens(list(clean)), history
+            return _stream_tokens([clean]), history
 
         # Execute tool call
         tool_name  = tool_call["tool"]
@@ -202,21 +202,44 @@ def run(
 
 def _strip_tool_json(text: str) -> str:
     """
-    Remove tool call JSON from a response that mixes JSON + plain text.
-    e.g. '```json\n{"tool":...}\n```\nFile created.' -> 'File created.'
+    Remove ALL tool call JSON and tool result noise from a response.
+    Leaves only the human-readable final message.
     """
+    import re as _re
+
     # Remove fenced JSON blocks
-    text = re.sub(r"```(?:json)?\s*\{.*?\}\s*```", "", text, flags=re.DOTALL)
-    # Remove bare JSON tool calls at start of text
-    stripped = text.strip()
-    if stripped.startswith("{") and '"tool"' in stripped:
-        decoder = json.JSONDecoder()
+    text = _re.sub(r"```(?:json)?\s*\{.*?\}\s*```", "", text, flags=_re.DOTALL)
+
+    # Remove bare JSON tool calls (loop until none left)
+    decoder = json.JSONDecoder()
+    for _ in range(20):
+        s = text.strip()
+        idx = s.find("{")
+        if idx == -1:
+            break
+        # Only strip if it looks like a tool call
+        snippet = s[idx:idx+300]
+        if '"tool"' not in snippet or '"parameters"' not in snippet:
+            break
         try:
-            _, end = decoder.raw_decode(stripped)
-            text = stripped[end:].strip()
+            _, end = decoder.raw_decode(s, idx)
+            text = (s[:idx] + s[end:]).strip()
         except json.JSONDecodeError:
-            pass
-    return text.strip()
+            break
+
+    # Remove leftover tool result lines: "result:", "[ok] ...", "parameters: ..."
+    lines = text.splitlines()
+    clean = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("result:"):       continue
+        if stripped.startswith("[ok]"):          continue
+        if stripped.startswith("[error]"):       continue
+        if stripped.startswith("parameters:"):  continue
+        if stripped.startswith("[tool:"):        continue
+        clean.append(line)
+
+    return "\n".join(clean).strip()
 
 
 def _stream_tokens(tokens: list[str]) -> Generator[str, None, None]:

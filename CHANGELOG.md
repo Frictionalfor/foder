@@ -86,3 +86,72 @@ All bugs fixed, features added, and improvements made during development.
 | 2 | Multi-file projects | 3b model sometimes stops after 1-2 files. Use 7b or break into smaller tasks |
 | 3 | Interactive TUI apps | `nano`, `vim` open but may have display issues inside foder's terminal handling |
 | 4 | Windows support | Tested primarily on Linux. Windows install script provided but less tested |
+| 21 | Ollama model cold-load taking 11 seconds | Every new session reloaded model from disk | Added `keep_alive: 10m` to all chat requests; model stays warm between sessions | `llm.py` |
+| 22 | `write/read/write` infinite loop on file tasks | Model wrote file, read it back to verify, rewrote, repeated | Added prompt rule: "After writing a file, do NOT read it back to verify" | `prompt.py` |
+| 23 | `<full game code here>` written to file literally | Prompt example used placeholder text, model copied it | Removed the bad example from system prompt | `prompt.py` |
+| 24 | `_logo_cache` not invalidated on theme change | Logo stayed old color after `/theme` switch | Added `_logo_cache = None` in `_apply_theme()` | `main.py` |
+| 25 | `make a python file` routed to shell as `make` command | `make` was in auto-detect list, conflicted with natural language | Removed `make`, `python`, `python3` from auto-detect list | `main.py` |
+| 26 | `list(clean)` streaming response one character at a time | `_stream_tokens(list("hello"))` = `['h','e','l','l','o']` | Fixed to `_stream_tokens([clean])` — one chunk | `agent.py` |
+| 27 | Multiple tool call JSONs leaking into final response | Two back-to-back tool calls both printed as output | `_strip_tool_json` now loops to remove all JSON blocks, not just the first | `agent.py` |
+| 28 | `file_create` unknown tool error | Model called `file_create` instead of `file_write`, silently failed | Added tool aliases: `file_create`, `write_file`, `bash`, `mkdir`, `run`, etc. | `tools/registry.py` |
+| 29 | Model narrating instead of acting | "I'll start by creating..." instead of calling tool | Added explicit ban on narration phrases in system prompt | `prompt.py` |
+| 30 | Model stopping after `dir_create` without writing files | Created directory then gave final answer without writing any files | Added prompt rule: "after dir_create, IMMEDIATELY write files inside it" | `prompt.py` |
+
+---
+
+## Features Added
+
+| # | Feature | Description | Added in |
+|---|---------|-------------|----------|
+| 1 | Streaming output | Tokens stream to terminal as they arrive from Ollama | agent.py rewrite |
+| 2 | Model auto-detection | On startup, detects all Ollama models and shows picker if configured model not found | main.py |
+| 3 | `/switch` command | Change model mid-session without restarting | main.py |
+| 4 | `!` shell passthrough | Run any terminal command with `!` prefix | main.py |
+| 5 | `!cd` directory navigation | Changes working directory for the session, updates workspace | main.py |
+| 6 | `!!` re-run last command | Re-executes the previous shell command | main.py |
+| 7 | Auto shell detection | Common commands (`ls`, `cd`, `git`, `nano`, etc.) work without `!` | main.py |
+| 8 | Tab completion | `/` commands and `@filenames` complete on Tab | main.py |
+| 9 | Ctrl+R history search | Persistent prompt history across sessions | main.py |
+| 10 | `@file` context injection | `@filename` injects file content into prompt | main.py |
+| 11 | `/pin` / `/unpin` | Pin files to be injected into every prompt automatically | main.py |
+| 12 | Session memory | Last 20 messages saved to `~/.foder/session.json`, resumed on next start | main.py |
+| 13 | `/undo` | Reverts last file write | main.py |
+| 14 | `/diff` | Shows colored diff of last file write | main.py |
+| 15 | `/run` | Auto-detects project type and runs it | main.py |
+| 16 | `/git` | Rich git status panel with branch, changes, recent commits | main.py |
+| 17 | `/snapshot` + `/snapshot diff` | Save workspace state, compare changes | main.py |
+| 18 | `/cost` | Session stats: time, messages, tool calls, files written, ~tokens | main.py |
+| 19 | `/arch` | ASCII architecture diagram | main.py |
+| 20 | `/theme` | 6 color themes (green, teal, amber, rose, blue, lime), persisted | main.py |
+| 21 | 3D logo | Per-character color gradient with extrusion shadow effect | main.py |
+| 22 | Colored `ls` | Directories, files, scripts colored by type | main.py |
+| 23 | `dir_create` tool | Proper directory creation (separate from file_write) | tools/dir_create.py |
+| 24 | Tool aliases | `file_create`, `bash`, `mkdir`, `run` etc. all route to correct tools | tools/registry.py |
+| 25 | `foder.json` project config | Per-project config loaded on startup and on `cd` | config.py |
+| 26 | `foder "prompt"` CLI mode | Non-interactive single-prompt execution | main.py |
+| 27 | Multi-line input | Lines ending with `\` continue on next line | main.py |
+| 28 | Token counter in prompt | Shows `~1.0k` estimate when context grows | main.py |
+| 29 | Git branch in prompt | Shows current branch next to path | main.py |
+| 30 | Risky command confirmation | `sudo`, `rm`, `apt` etc. ask before running | main.py |
+| 31 | Timeout confirmation | Long-running commands ask before terminating | main.py |
+| 32 | Model unload on exit | `/exit` sends `keep_alive: 0` to free RAM | llm.py |
+| 33 | `update.sh` | Auto-updater: pulls latest git, reinstalls | update.sh |
+| 34 | History trimming | Only last 10 messages sent per LLM request | agent.py |
+| 35 | Tool result truncation | Tool results capped at 500 chars in history | agent.py |
+| 36 | Logo caching | 3D logo computed once per theme, cached | main.py |
+| 37 | 42-test suite | Full test coverage: imports, config, security, tools, agent, session, prompt, themes | test_foder.py |
+| 38 | `TRY_THIS.md` | Curated test prompts for users to try | TRY_THIS.md |
+| 39 | `CHANGELOG.md` | Full bug tracker and feature log | CHANGELOG.md |
+| 40 | Website design doc | Complete spec for foder landing page (React + Tailwind + Framer Motion) | DESIGN.md |
+
+---
+
+## Known Limitations
+
+| # | Limitation | Notes |
+|---|-----------|-------|
+| 1 | Generation speed | Depends on hardware and model size. Use `qwen2.5-coder:3b` for speed |
+| 2 | Multi-file projects | 3b model sometimes stops after 1-2 files. Use 7b or break into smaller tasks |
+| 3 | Interactive TUI apps | `nano`, `vim` open but may have display issues inside foder's terminal handling |
+| 4 | Windows support | Tested primarily on Linux. Windows install script provided but less tested |
+| 5 | Model narration | Smaller models (3b) sometimes describe steps instead of acting. Use 7b for complex tasks |
