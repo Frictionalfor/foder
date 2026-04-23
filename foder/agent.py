@@ -150,11 +150,16 @@ def run(
         tool_name  = tool_call["tool"]
         parameters = tool_call.get("parameters", {})
 
+        # Notify UI before execution (shows the tool call indicator)
         if on_tool_call:
-            on_tool_call(tool_name, parameters)
+            on_tool_call(tool_name, parameters, None)
 
         result        = dispatch(tool_name, parameters)
         stored_result = _truncate_tool_result(result)
+
+        # Notify UI after execution with the result
+        if on_tool_call:
+            on_tool_call(tool_name, parameters, result)
 
         tool_turn = (
             f"[tool: {tool_name}]\n"

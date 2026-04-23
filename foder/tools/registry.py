@@ -6,13 +6,15 @@ All tool calls are dispatched through here.
 import foder.tools.file_read as file_read
 import foder.tools.file_write as file_write
 import foder.tools.dir_list as dir_list
+import foder.tools.dir_create as dir_create
 import foder.tools.shell_exec as shell_exec
 
 # Map: tool_name -> module
 _REGISTRY = {
-    "file_read": file_read,
+    "file_read":  file_read,
     "file_write": file_write,
-    "dir_list": dir_list,
+    "dir_list":   dir_list,
+    "dir_create": dir_create,
     "shell_exec": shell_exec,
 }
 

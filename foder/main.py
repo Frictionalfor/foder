@@ -372,12 +372,84 @@ def _confirm(prompt: str) -> bool:
         return False
 
 
+def _ls_colored(path: str = ".") -> None:
+    """Render directory listing with dirs and files in different colors."""
+    target = (_cwd / path).resolve()
+    if not target.is_dir():
+        console.print(f"  [red]not a directory:[/red] {path}")
+        return
+    try:
+        entries = sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+    except PermissionError:
+        console.print(f"  [red]permission denied:[/red] {path}")
+        return
+
+    if not entries:
+        console.print(f"  [{_DIM}]empty[/{_DIM}]")
+        return
+
+    # Build columns: dirs first (accent color + /), then files (white)
+    items = []
+    for e in entries:
+        if e.is_dir():
+            items.append(Text(e.name + "/", style=f"bold {_A2}"))
+        elif e.is_symlink():
+            items.append(Text(e.name + "@", style=f"{_A1}"))
+        else:
+            # Color by extension
+            ext = e.suffix.lower()
+            if ext in (".py", ".js", ".ts", ".go", ".rs", ".c", ".cpp", ".java"):
+                style = "white"
+            elif ext in (".json", ".yaml", ".yml", ".toml", ".ini", ".cfg"):
+                style = f"{_A1}"
+            elif ext in (".md", ".txt", ".rst"):
+                style = _DIM
+            elif ext in (".sh", ".bash", ".zsh", ".ps1"):
+                style = "yellow"
+            elif ext in (".html", ".css", ".scss"):
+                style = "cyan"
+            else:
+                style = "white"
+            items.append(Text(e.name, style=style))
+
+    # Print in a grid — up to 4 columns
+    col_width = max(len(str(i)) for i in items) + 2
+    cols      = max(1, min(4, console.width // col_width))
+    row       = []
+    for i, item in enumerate(items):
+        row.append(item)
+        if len(row) == cols or i == len(items) - 1:
+            line = Text()
+            for j, cell in enumerate(row):
+                line.append_text(cell)
+                if j < len(row) - 1:
+                    line.append(" " * (col_width - len(str(cell))))
+            console.print("  ", end="")
+            console.print(line)
+            row = []
+
+
 def _run_shell(command: str) -> None:
     global _cwd
     command = command.strip()
     if not command:
         console.print(f"  [{_DIM}]cwd →[/{_DIM}] [{_A2}]{_cwd}[/{_A2}]")
         return
+
+    # Intercept ls/ll — render with colors
+    if command in ("ls", "ll", "ls -la", "ls -l", "ls -a") or command.startswith("ls "):
+        path = "."
+        parts = command.split()
+        # Extract path argument if present (skip flags)
+        for p in parts[1:]:
+            if not p.startswith("-"):
+                path = p
+                break
+        console.print(Rule(f"[{_DIM}]$ {command}[/{_DIM}]", style=_A5, align="left"))
+        _ls_colored(path)
+        console.print(Rule(f"[{_DIM}]✓[/{_DIM}]", style=_A5, align="left"))
+        return
+
     if command == "cd" or command.startswith(("cd ", "cd\t")):
         parts  = command.split(None, 1)
         target = parts[1] if len(parts) > 1 else str(Path.home())
@@ -393,6 +465,11 @@ def _run_shell(command: str) -> None:
     except SecurityError as e:
         console.print(Panel(f"[red]{e}[/red]", title="[red]blocked[/red]", border_style="red"))
         return
+
+    # Auto-add --color=auto to ls on Linux/macOS
+    if command == "ls" or command.startswith("ls "):
+        if "--color" not in command:
+            command = command.replace("ls", "ls --color=auto", 1)
     cmd_lower = command.lower()
     if any(cmd_lower.startswith(p) or f" {p}" in cmd_lower for p in _RISKY):
         console.print(f"  [yellow]risky:[/yellow] {command}")
@@ -890,6 +967,13 @@ def main() -> None:
 
         user_input = user_input.strip()
         if not user_input:
+            continue
+
+        # ── cd shortcut — no need to type !cd ─────────────────────────────
+        if user_input.startswith("cd ") or user_input == "cd":
+            console.print()
+            _run_shell(user_input)
+            console.print()
             continue
 
         # ── !! re-run last shell command ───────────────────────────────────
