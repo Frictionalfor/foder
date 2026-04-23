@@ -11,6 +11,8 @@ No cloud. No API keys. Runs entirely on your machine.
   ██       ██████  ██████  ███████ ██   ██
 ```
 
+> Built by [Frictionalfor](https://github.com/Frictionalfor) · [github.com/Frictionalfor/foder](https://github.com/Frictionalfor/foder)
+
 ---
 
 ## Requirements
@@ -44,6 +46,12 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 pip install -e .
 ```
 
+### Update
+
+```bash
+bash update.sh
+```
+
 ---
 
 ## Usage
@@ -52,7 +60,7 @@ pip install -e .
 foder
 ```
 
-Opens an interactive REPL. The agent reads files, writes files, lists directories,
+Opens an interactive REPL. The agent reads files, writes files, creates directories,
 and runs shell commands — all scoped to your working directory.
 
 ### Non-interactive mode
@@ -61,21 +69,31 @@ and runs shell commands — all scoped to your working directory.
 foder "create a hello world python file"
 ```
 
-Runs the prompt, prints output, and exits. Useful for scripts.
+Runs the prompt, prints output, and exits. Useful for scripts and automation.
 
 ---
 
 ## Shell Commands
 
-Prefix any terminal command with `!` to run it directly:
+Common shell commands work directly — no `!` prefix needed:
 
 ```
-foder ❯ !ls -la
-foder ❯ !git status
-foder ❯ !python3 main.py
-foder ❯ !cd src          ← changes cwd for the session
-foder ❯ !                ← shows current directory
-foder ❯ !!               ← re-runs the last shell command
+foder ❯ ls -la
+foder ❯ cd src
+foder ❯ git status
+foder ❯ cat main.py
+foder ❯ nano style.css
+foder ❯ python3 app.py
+foder ❯ gcc hello.c -o hello
+foder ❯ npm install
+```
+
+For any other shell command, prefix with `!`:
+
+```
+foder ❯ !htop
+foder ❯ !df -h
+foder ❯ !!          ← re-runs the last shell command
 ```
 
 Output streams live. `Ctrl+C` kills the running process cleanly.
@@ -105,6 +123,18 @@ Files larger than 32KB are skipped with a notice.
 
 ---
 
+## Multi-line Input
+
+End a line with `\` to continue on the next line:
+
+```
+foder ❯ create a python file that reads a CSV, \
+         filters rows where age > 18, \
+         and saves the result to output.csv
+```
+
+---
+
 ## Slash Commands
 
 | Command | Description |
@@ -120,6 +150,14 @@ Files larger than 32KB are skipped with a notice.
 | `/undo` | revert last file write |
 | `/diff` | show diff of last file write |
 | `/run` | auto-detect and run the project |
+| `/git` | show git status (branch, changes, recent commits) |
+| `/pin <file>` | pin a file to every prompt automatically |
+| `/unpin <file>` | remove a pinned file |
+| `/pins` | list all pinned files |
+| `/snapshot` | save current workspace file state |
+| `/snapshot diff` | show what changed since last snapshot |
+| `/cost` | show session stats (messages, tool calls, ~tokens) |
+| `/arch` | show architecture diagram |
 | `/help` | show all commands |
 | `/exit` | quit foder (unloads model from RAM) |
 
@@ -156,7 +194,8 @@ Drop a `foder.json` in your project root:
 }
 ```
 
-Foder loads it automatically on startup. Environment variables take precedence.
+Foder loads it automatically on startup and when you `cd` into the directory.
+Environment variables take precedence over `foder.json`.
 
 ---
 
@@ -181,17 +220,20 @@ The next time you run `foder` it resumes where you left off.
 
 Use `/clear` to wipe the session completely.
 
+Prompt history persists across sessions — use `Ctrl+R` to search previous inputs.
+
 ---
 
 ## Tools
 
-The agent has access to four tools:
+The agent has access to five tools:
 
 | Tool | Description |
 |---|---|
 | `file_read` | read a file |
 | `file_write` | write / create a file |
 | `dir_list` | list directory contents |
+| `dir_create` | create a directory |
 | `shell_exec` | run a shell command (sandboxed) |
 
 ---
@@ -207,13 +249,14 @@ The agent has access to four tools:
 
 ---
 
-## Performance
+## Performance Tips
 
-- Tokens stream to the terminal as they arrive from Ollama
-- Only the last 6 messages are sent per LLM request (keeps requests lean)
-- Tool results truncated to 500 chars in history (prevents context bloat)
-- Model stays warm in RAM for 10 minutes between requests
-- Logo and theme colors are cached — no recomputation on `/clear`
+- Use `qwen2.5-coder:3b` for speed, `7b` for quality
+- Model stays warm in RAM for 10 minutes between requests (fast subsequent calls)
+- Only the last 10 messages are sent per LLM request
+- Tool results are truncated to 500 chars in history
+- Use `/clear` when starting a new unrelated task to reset context
+- Break large tasks into smaller steps for faster, more reliable results
 
 ---
 
@@ -233,6 +276,16 @@ ollama pull qwen2.5-coder:3b
 
 ---
 
+## Running Tests
+
+```bash
+python3 test_foder.py
+```
+
+42 tests covering imports, config, security, tools, agent, session, prompt, themes, and snapshot.
+
+---
+
 ## Project Structure
 
 ```
@@ -248,11 +301,13 @@ foder/
 │       ├── file_read.py
 │       ├── file_write.py
 │       ├── dir_list.py
+│       ├── dir_create.py
 │       ├── shell_exec.py
 │       └── registry.py
-├── test_foder.py      test suite (37 tests)
+├── test_foder.py      test suite (42 tests)
+├── run_tests.py       on-site integration test runner
 ├── install.sh         Linux/macOS installer
 ├── install.ps1        Windows installer
+├── update.sh          auto-updater
 └── pyproject.toml
 ```
-

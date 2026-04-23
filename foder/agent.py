@@ -57,8 +57,12 @@ def _extract_tool_call(text: str) -> dict | None:
 
 
 def _is_tool_call(text: str) -> bool:
-    """Quick check - does this text contain a tool call?"""
-    return '"tool"' in text and '"parameters"' in text
+    """Quick check - does this look like a tool call JSON (not a tool result)?"""
+    # Tool results start with "[tool:" — exclude them
+    stripped = text.strip()
+    if stripped.startswith("[tool:"):
+        return False
+    return '"tool"' in stripped and '"parameters"' in stripped
 
 
 # ── History management ────────────────────────────────────────────────────────
@@ -76,27 +80,49 @@ def _trim_history(history: list[dict]) -> list[dict]:
     return history[-_MAX_HISTORY_MESSAGES:]
 
 
+def _is_tool_result(msg: dict) -> bool:
+    """True if this message is a tool result injected by the agent loop."""
+    return msg["role"] == "user" and msg["content"].startswith("[tool:")
+
+
 def _build_messages(history: list[dict]) -> list[dict]:
     """
-    Send the system prompt + recent history to the LLM.
-    Always includes the first user message of the current turn so the model
-    never loses context of what it was asked to do.
+    Build the message list for the LLM.
+    - Takes the last _RECENT_TURNS messages
+    - Strips standalone tool result messages that are older than 2 turns
+      (they bloat context and confuse the model)
+    - Always anchors the original user request of the CURRENT turn
     """
-    if len(history) <= _RECENT_TURNS:
-        return build_messages(history)
+    if not history:
+        return build_messages([])
 
+    # Find the start of the current user turn (last non-tool user message)
+    current_turn_start = None
+    for i in range(len(history) - 1, -1, -1):
+        m = history[i]
+        if m["role"] == "user" and not _is_tool_result(m):
+            current_turn_start = i
+            break
+
+    # Take recent messages
     recent = history[-_RECENT_TURNS:]
 
-    # Always anchor with the original user request (first non-tool message)
-    # so the model remembers the full task across multiple tool calls
-    first_user = next(
-        (m for m in history if m["role"] == "user" and not m["content"].startswith("[tool:")),
-        None,
-    )
-    if first_user and first_user not in recent:
-        recent = [first_user] + recent
+    # Ensure the current turn's user message is always included
+    if current_turn_start is not None:
+        anchor = history[current_turn_start]
+        if anchor not in recent:
+            recent = [anchor] + recent
 
-    return build_messages(recent)
+    # Filter out old tool results that are not part of the current tool chain
+    # Keep tool results only from the last 4 messages (current tool call chain)
+    cutoff = max(0, len(recent) - 4)
+    filtered = []
+    for i, m in enumerate(recent):
+        if _is_tool_result(m) and i < cutoff:
+            continue  # drop old tool results
+        filtered.append(m)
+
+    return build_messages(filtered)
 
 
 # ── Agent loop ────────────────────────────────────────────────────────────────
@@ -142,9 +168,10 @@ def run(
         tool_call = _extract_tool_call(raw) if _is_tool_call(raw) else None
 
         if tool_call is None:
-            # Final answer - stream the collected tokens
-            history.append({"role": "assistant", "content": raw})
-            return _stream_tokens(tokens), history
+            # Final answer - clean up any leaked tool call JSON before displaying
+            clean = _strip_tool_json(raw)
+            history.append({"role": "assistant", "content": clean})
+            return _stream_tokens(list(clean)), history
 
         # Execute tool call
         tool_name  = tool_call["tool"]
@@ -152,14 +179,12 @@ def run(
 
         # Notify UI before execution (shows the tool call indicator)
         if on_tool_call:
-            on_tool_call(tool_name, parameters, None)
+            on_tool_call(tool_name, parameters)
 
         result        = dispatch(tool_name, parameters)
         stored_result = _truncate_tool_result(result)
 
-        # Notify UI after execution with the result
-        if on_tool_call:
-            on_tool_call(tool_name, parameters, result)
+        # No second callback needed - UI already showed the tool call
 
         tool_turn = (
             f"[tool: {tool_name}]\n"
@@ -175,8 +200,27 @@ def run(
     return _single(timeout), history
 
 
+def _strip_tool_json(text: str) -> str:
+    """
+    Remove tool call JSON from a response that mixes JSON + plain text.
+    e.g. '```json\n{"tool":...}\n```\nFile created.' -> 'File created.'
+    """
+    # Remove fenced JSON blocks
+    text = re.sub(r"```(?:json)?\s*\{.*?\}\s*```", "", text, flags=re.DOTALL)
+    # Remove bare JSON tool calls at start of text
+    stripped = text.strip()
+    if stripped.startswith("{") and '"tool"' in stripped:
+        decoder = json.JSONDecoder()
+        try:
+            _, end = decoder.raw_decode(stripped)
+            text = stripped[end:].strip()
+        except json.JSONDecodeError:
+            pass
+    return text.strip()
+
+
 def _stream_tokens(tokens: list[str]) -> Generator[str, None, None]:
-    """Yield pre-collected tokens one by one - simulates streaming for the UI."""
+    """Yield pre-collected tokens one by one."""
     for t in tokens:
         yield t
 
