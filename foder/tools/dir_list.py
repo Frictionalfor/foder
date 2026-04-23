@@ -12,6 +12,29 @@ SCHEMA = {
     "required": ["path"],
 }
 
+# File extension → color
+_EXT_COLORS = {
+    ".py":   "#4ADE80",   # green
+    ".js":   "#FCD34D",   # yellow
+    ".ts":   "#60A5FA",   # blue
+    ".jsx":  "#FCD34D",
+    ".tsx":  "#60A5FA",
+    ".html": "#F97316",   # orange
+    ".css":  "#A78BFA",   # violet
+    ".json": "#FB923C",   # amber
+    ".md":   "#94A3B8",   # slate
+    ".c":    "#67E8F9",   # cyan
+    ".cpp":  "#67E8F9",
+    ".h":    "#A5F3FC",
+    ".sh":   "#86EFAC",
+    ".txt":  "#D1D5DB",
+    ".zip":  "#F472B6",
+    ".tar":  "#F472B6",
+    ".gz":   "#F472B6",
+}
+_DIR_COLOR  = "#60A5FA"   # blue for directories
+_FILE_COLOR = "#E5E7EB"   # light grey default for files
+
 
 def execute(path: str) -> str:
     try:
@@ -25,11 +48,21 @@ def execute(path: str) -> str:
         return f"[error] Path is not a directory: {path}"
 
     try:
-        entries = sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name))
+        entries = sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+        if not entries:
+            return "[empty directory]"
+
         lines = []
         for entry in entries:
-            kind = "FILE" if entry.is_file() else "DIR "
-            lines.append(f"  {kind}  {entry.name}")
-        return "\n".join(lines) if lines else "[empty directory]"
+            if entry.is_dir():
+                # Directories: blue + trailing slash
+                lines.append(f"[{_DIR_COLOR}]{entry.name}/[/{_DIR_COLOR}]")
+            else:
+                # Files: color by extension
+                ext   = entry.suffix.lower()
+                color = _EXT_COLORS.get(ext, _FILE_COLOR)
+                lines.append(f"[{color}]{entry.name}[/{color}]")
+
+        return "  " + "  ".join(lines)
     except Exception as e:
         return f"[error] Could not list directory: {e}"
