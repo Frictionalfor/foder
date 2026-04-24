@@ -650,11 +650,13 @@ def _print_exit(history,start_time):
     mins,secs=int(elapsed//60),int(elapsed%60)
     duration=f"{mins}m {secs}s" if mins else f"{secs}s"
     turns=sum(1 for m in history if m["role"]=="user" and not m["content"].startswith("[tool:"))
+    tok_est=sum(len(m.get("content","")) for m in history)//4
     now=datetime.datetime.now().strftime("%H:%M")
     grid=Table.grid(padding=(0,4))
     grid.add_row(Text("  ended    ",style=_DIM),Text(now,style=_A1))
     grid.add_row(Text("  duration ",style=_DIM),Text(duration,style=_A1))
     grid.add_row(Text("  messages ",style=_DIM),Text(str(turns),style=_A1))
+    grid.add_row(Text("  ~tokens  ",style=_DIM),Text(f"~{tok_est:,}",style=_A1))
     grid.add_row(Text("  model    ",style=_DIM),Text(config.OLLAMA_MODEL,style=_A2))
     console.print()
     console.print(Panel(grid,border_style=_A4,padding=(0,2),
