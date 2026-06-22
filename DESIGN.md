@@ -1,494 +1,640 @@
-# Foder Website — Design Document
+# Foder — System Design Document
 
-Complete specification for the foder landing page.
-Built with React + Vite + Tailwind CSS + Framer Motion.
-
----
-
-## Brand Identity
-
-**Name:** Foder
-**Tagline:** Your local AI coding agent. No cloud. No keys. Just code.
-**Sub-tagline:** Runs entirely on your machine with Ollama.
-**Author:** Frictionalfor
-**GitHub:** https://github.com/Frictionalfor/foder
-**GitHub Profile:** https://github.com/Frictionalfor
+Complete technical specification for the Foder ecosystem.
+Local-first AI coding agent powered entirely by Ollama.
 
 ---
 
-## Color System
+## 1. Product Vision
 
-### Primary Palette (default — Green theme)
-```
-Background:     #0a0a0a   (near black)
-Surface:        #111111   (card backgrounds)
-Border:         #1a1a1a   (subtle borders)
-Accent:         #4ADE80   (green — primary CTA, highlights)
-Accent Light:   #BBF7D0   (light green — text on dark)
-Accent Dark:    #166534   (deep green — borders, shadows)
-Text Primary:   #ffffff
-Text Secondary: #9ca3af   (gray-400)
-Text Dim:       #6b7280   (gray-500)
-```
+Foder is an **OpenCode-class developer agent** that runs 100% locally.
 
-### All 6 Themes (match foder CLI themes exactly)
-```
-green:  #4ADE80 / #BBF7D0 / #166534
-teal:   #06B6D4 / #67E8F9 / #164E63
-amber:  #F59E0B / #FDE68A / #78350F
-rose:   #FB7185 / #FECDD3 / #9F1239
-blue:   #38BDF8 / #BAE6FD / #075985
-lime:   #A3E635 / #D9F99D / #3F6212
-```
+**Non-negotiable constraints:**
+- All AI inference through local Ollama models only
+- No OpenAI / Anthropic / Gemini / cloud API calls
+- Works fully offline once installed
+- Zero data leaves the user's machine
 
-### Typography
+**Target experience:** "OpenCode UX — but fully self-hosted and offline."
+
+---
+
+## 2. Architecture Overview
+
 ```
-Font:       JetBrains Mono (monospace — everything)
-Fallback:   Fira Code, Consolas, monospace
-Import:     Google Fonts
-Sizes:
-  Hero title:    clamp(3rem, 8vw, 7rem)
-  Section title: 2.5rem
-  Body:          1rem
-  Small:         0.875rem
-  Code:          0.9rem
+  User Input (terminal)
+        |
+  ┌─────▼──────────────────────────────────────────────────┐
+  │  FODER CLI  (main.py)                                  │
+  │  REPL + OpenCode-style trace UI + slash commands       │
+  │  Agent state: IDLE / PLANNING / EXECUTING / DONE       │
+  └──────┬──────────────────────────┬──────────────────────┘
+         |                          |
+  ┌──────▼──────┐          ┌────────▼────────────────────┐
+  │  CONTEXT    │          │  AGENT LOOP  (agent.py)     │
+  │  ENGINE     │          │  plan -> tool -> verify     │
+  │  (context)  │          │  -> retry -> final response │
+  └──────┬──────┘          └────────┬────────────────────┘
+         |                          |
+  ┌──────▼──────┐          ┌────────▼────────────────────┐
+  │  MEMORY     │          │  TOOL REGISTRY              │
+  │  3 layers   │          │  11 tools + 30 aliases      │
+  │  (memory)   │          │  file / dir / shell / git   │
+  └─────────────┘          └────────┬────────────────────┘
+                                     |
+  ┌──────────────────────────────────▼────────────────────┐
+  │  OLLAMA  (local LLM — no cloud)                       │
+  │  qwen2.5-coder / qwen3 / deepseek-coder / llama /    │
+  │  mistral / codellama / phi3 / any pulled model        │
+  └───────────────────────────────────────────────────────┘
+
+  Skills:  ~/.foder/skills/  +  ./skills/  +  built-in /skills/
+  Memory:  session(RAM)  +  workspace(.foder/)  +  user(~/.foder/)
+  Security: workspace jail  +  command blocklist  +  audit log
 ```
 
 ---
 
-## Page Structure & Sections
+## 3. Agent Loop Design
 
-### 1. Navigation Bar
-- Fixed top, blur backdrop (`backdrop-blur-md bg-black/60`)
-- Left: ASCII logo `◆ foder` in accent color, links to top
-- Center: links — Features, Demo, Install, Themes
-- Right: GitHub star button (shows star count via API), "Get Started" CTA button
-- On scroll: border-bottom appears with subtle glow
-- Mobile: hamburger menu with slide-down drawer
+### State Machine
 
-**Animation:** fade-in + slide-down on load (0.3s ease)
+```
+IDLE -> PLANNING -> EXECUTING -> VERIFYING -> COMPLETED
+                              \-> FAILED -> retry -> EXECUTING
+```
+
+**State transitions:**
+
+| From | To | Trigger |
+|------|----|---------|
+| IDLE | PLANNING | User sends a prompt |
+| PLANNING | EXECUTING | LLM returns first tool call |
+| EXECUTING | EXECUTING | Tool succeeds, more tool calls in response |
+| EXECUTING | VERIFYING | All tool calls executed, checking results |
+| VERIFYING | COMPLETED | No errors in results |
+| VERIFYING | FAILED | Error detected in tool result |
+| FAILED | EXECUTING | Self-correction prompt sent, LLM retries |
+| FAILED | COMPLETED | Max retries reached, bail out gracefully |
+| EXECUTING | COMPLETED | LLM returns plain text (no tool call) |
+
+### Loop Implementation (agent.py)
+
+```
+for iteration in range(MAX_ITERATIONS):
+    raw = collect_full_llm_response()       # synchronous collect
+
+    # Loop detection (2 layers)
+    if response_is_identical_to_last():
+        inject_breakout_prompt(); get_final_answer(); return
+
+    tool_call = extract_tool_call(raw)
+
+    if tool_call is None:                   # final answer
+        return strip_json(raw)
+
+    # Execute ALL tool calls in this response
+    while has_more_tool_calls(remaining):
+        if same_tool_called_N_times():      # loop detection layer 2
+            inject_breakout_prompt(); return
+        result = dispatch(tool_call)
+        store_in_history(tool_call, result)
+        remaining = strip_one_tool_call(remaining)
+
+    # Check leftover natural language
+    leftover = strip_all_json(remaining)
+    if leftover and len(leftover) > 10:
+        return leftover                     # final answer
+
+    # Otherwise: loop back — LLM will write next file/call next tool
+    continue
+```
+
+**Key design decision:** the loop only returns early on a genuine final answer (>10 chars of human-readable text). This enables multi-file project generation — the LLM writes file 1, loop continues, LLM writes file 2, etc.
+
+### Tool Call Extraction
+
+Priority order:
+1. Fenced JSON block: ` ```json {"tool":...} ``` `
+2. Bare JSON object: `{"tool":..., "parameters":...}`
+3. JSON with preamble: `Sure! {"tool":...}`
+4. Code block fallback: ` ```python\n<code>\n``` ` → synthesized `file_write`
+
+All extraction uses `json.JSONDecoder.raw_decode()` — no regex size limits.
 
 ---
 
-### 2. Hero Section
-Full viewport height. Dark background with animated grid.
+## 4. Tool System
 
-**Background:**
-- CSS grid pattern: `repeating-linear-gradient` creating a subtle dot/line grid
-- Animated gradient orbs: 2-3 large blurred circles in accent color, slowly drifting (`animation: float 8s ease-in-out infinite`)
-- Particle effect: 20-30 small dots floating upward slowly
+### Tool Registry (tools/registry.py)
 
-**Content (centered):**
-```
-[animated ASCII logo — see below]
-
-Your local AI coding agent.
-No cloud. No keys. Just code.
-
-[subtitle in dim color]
-Powered by Ollama · Runs on your machine · Open source
-
-[two CTA buttons]
-  [Get Started →]   [View on GitHub ↗]
-
-[install command box]
-  pip install foder
-  [copy icon]
+All tools share the interface:
+```python
+SCHEMA: dict           # name, description, parameters, required
+execute(**kwargs) -> str  # always returns string, never raises
 ```
 
-**ASCII Logo Animation:**
-- The foder logo renders character by character (typewriter effect, 20ms per char)
-- Each row has a different color matching the theme gradient
-- After render: subtle pulse glow animation on the whole logo
-- Logo:
+### Tools
+
+| Tool | Category | Description |
+|------|----------|-------------|
+| `file_read` | FILE | Read file contents |
+| `file_write` | FILE | Write / create file (creates parent dirs) |
+| `file_edit` | FILE | Patch-based edit: replace old_str with new_str |
+| `file_delete` | FILE | Delete a file |
+| `file_rename` | FILE | Rename or move a file |
+| `dir_list` | DIR | List directory contents |
+| `dir_create` | DIR | Create directory (idempotent) |
+| `dir_remove` | DIR | Remove empty directory |
+| `shell_exec` | SHELL | Run shell command with timeout |
+| `grep_search` | SEARCH | Pattern search across files (ripgrep + Python fallback) |
+| `git_tool` | GIT | git status / diff / log / add / commit / checkout |
+
+### Tool Aliases (30+)
+
+Models use different names. All are mapped transparently:
+
 ```
-  ███████  ██████  ██████  ███████ ██████
-  ██      ██    ██ ██   ██ ██      ██   ██
-  █████   ██    ██ ██   ██ █████   ██████
-  ██      ██    ██ ██   ██ ██      ██   ██
-  ██       ██████  ██████  ███████ ██   ██
+file_create, write_file, create_file  -> file_write
+read_file, read                        -> file_read
+edit_file, patch_file, str_replace     -> file_edit
+bash, run, exec, run_command           -> shell_exec
+mkdir, create_dir                      -> dir_create
+ls, list_dir, list_files               -> dir_list
+grep, search, ripgrep                  -> grep_search
+git, git_status, git_diff              -> git_tool
 ```
 
-**CTA Buttons:**
-- Primary: solid accent color, hover → scale(1.05) + glow shadow
-- Secondary: outlined, hover → fill with accent at 20% opacity
-- Both: `border-radius: 6px`, `padding: 12px 28px`
+### Security Layer (security.py)
 
-**Install Box:**
-- Dark surface card, monospace font
-- `$ pip install foder` with syntax highlight ($ in dim, command in accent)
-- Copy button: clipboard icon, on click → checkmark + "Copied!" for 2s
-- Subtle border glow on hover
+**Path jail:** `validate_path(raw)` resolves the path and checks it stays inside `config.WORKSPACE`. Reads `config.WORKSPACE` dynamically so `cd` changes are respected.
 
-**Scroll indicator:** animated bouncing arrow at bottom of hero
+**Command blocklist:** Absolute blocks regardless of context:
+```
+rm -rf /    rm -rf ~    mkfs    dd if=
+shutdown    reboot      halt    poweroff
+:(){ :|:& };:    chmod -R 777 /    format
+```
+
+**Risky commands** (ask confirmation):
+`sudo apt rm mv chmod chown curl wget systemctl kill pkill pip install npm install`
+
+**Audit log:** every tool call logged to `~/.foder/audit.log` as JSON.
 
 ---
 
-### 3. Stats Bar
-Full-width strip between hero and features.
+## 5. Skills System
+
+### Architecture
 
 ```
-[  42 Tests  ]  [  6 Themes  ]  [  5 Tools  ]  [  0 Cloud  ]  [  100% Local  ]
+User request
+    |
+detect_skill(text)   <- keyword scoring: phrase=3pts, word=1pt, threshold=2
+    |
+inject_skill(prompt, skill)   <- prepends structured instructions
+    |
+Agent loop runs with enhanced context
 ```
 
-- Numbers animate counting up when scrolled into view (0 → final value, 1.5s)
-- Separated by vertical dividers
-- Background: slightly lighter than page (`#111111`)
-- Border top/bottom: `1px solid #1a1a1a`
+### Skill JSON Format
+
+```json
+{
+  "name": "skill_name",
+  "version": "1.0.0",
+  "description": "...",
+  "tags": ["tag1", "tag2"],
+  "intent_keywords": ["phrase match", "word"],
+  "steps": ["Step 1", "Step 2"],
+  "best_practices": ["Practice 1"],
+  "templates": {
+    "filename": "content"
+  },
+  "system_prompt_injection": "Injected before user message."
+}
+```
+
+### Skill Search Paths (priority order)
+
+1. `<workspace>/skills/` — project-level (highest priority)
+2. `~/.foder/skills/` — user-level
+3. `<package>/skills/` — built-in (lowest priority, always available)
+
+### Built-in Skills (11)
+
+| Skill | Stack |
+|-------|-------|
+| `react_app` | React 18 + Vite + Tailwind + React Router v6 |
+| `next_app` | Next.js 14 App Router + TypeScript + Tailwind |
+| `fastapi_backend` | FastAPI + SQLAlchemy + Pydantic v2 + JWT |
+| `django_backend` | Django 5 + DRF + PostgreSQL + JWT |
+| `node_api` | Express + better-sqlite3 + Zod + JWT |
+| `fullstack_app` | React frontend + FastAPI/Express backend |
+| `saas_cloner` | Instagram / Twitter / Airbnb / Stripe clone |
+| `mobile_app` | React Native + Expo Router + TypeScript |
+| `auth_system` | JWT auth added to any existing project |
+| `database_schema` | SQLAlchemy models + migrations + seed data |
+| `cli_tool` | Python (Rich/Typer) or Node.js (Commander) CLI |
 
 ---
 
-### 4. Features Section
+## 6. Memory System
 
-**Title:** `What foder can do`
-**Subtitle:** `A complete coding agent that lives in your terminal`
+### Three Layers
 
-**Grid:** 3 columns on desktop, 2 on tablet, 1 on mobile
+| Layer | File | Scope | Contents |
+|-------|------|-------|---------|
+| Session | RAM only | Current session | Conversation history (list[dict]) |
+| Workspace | `<ws>/.foder/memory.json` | Per project | Facts, architecture notes, decisions, standing instructions |
+| User | `~/.foder/preferences.json` | Global | Model preference, theme, coding style |
 
-**Feature Cards (9 total):**
+### Session Memory
 
-| Icon | Title | Description |
-|------|-------|-------------|
-| ◆ | Local LLM | Powered by Ollama. qwen2.5-coder, llama3, any model you pull. |
-| ▸ | File Operations | Read, write, create files and directories. All scoped to your workspace. |
-| $ | Shell Execution | Run terminal commands directly. Risky commands ask for confirmation. |
-| ~ | Session Memory | Conversation saved across sessions. Resume where you left off. |
-| ⚙ | 6 Color Themes | Green, Teal, Amber, Rose, Blue, Lime. Persisted across sessions. |
-| @ | File Injection | @filename injects file content into your prompt automatically. |
-| ◈ | /pin Command | Pin files to every prompt. Never type @file again. |
-| ↩ | /undo | Revert any file write instantly. |
-| ≋ | /snapshot | Save workspace state. See exactly what changed. |
+- Last 14 turns sent to LLM per request (`_RECENT_TURNS = 14`)
+- Hard cap: 60 messages in memory (`_MAX_HISTORY_MESSAGES = 60`)
+- Tool results truncated to 1200 chars in history to prevent bloat
+- Saved to `~/.foder/session.json` (last 20 messages) on every agent turn
 
-**Card Design:**
-- Background: `#111111`
-- Border: `1px solid #1a1a1a`
-- Border-radius: `12px`
-- Padding: `24px`
-- Icon: large, in accent color, top-left
-- Hover: border color → accent, subtle glow, `translateY(-4px)` (0.2s ease)
-- Entrance: staggered fade-in + slide-up as they scroll into view (50ms delay between cards)
+### Workspace Memory
+
+Stored in `<workspace>/.foder/memory.json`. Injected into system prompt when non-empty:
+
+```
+WORKSPACE MEMORY:
+PROJECT FACTS:
+- this project uses PostgreSQL, not SQLite
+ARCHITECTURE:
+  monorepo: React in /frontend, FastAPI in /api
+STANDING INSTRUCTIONS:
+  always use type hints and docstrings
+```
+
+### Persistent History
+
+All user prompts appended to `~/.foder/history.jsonl` (one JSON object per line):
+```json
+{"ts": 1719123456, "prompt": "build a fastapi backend"}
+```
+
+Searchable via `/history [query]`.
 
 ---
 
-### 5. Live Demo Terminal Section
+## 7. Context Engine
 
-**Title:** `See it in action`
-**Subtitle:** `Watch foder build real projects`
+### Project Detection (context.py)
 
-**Terminal Window:**
-- Realistic macOS-style terminal chrome (3 colored dots: red/yellow/green)
-- Title bar: `foder — ~/projects/myapp`
-- Dark background: `#0d0d0d`
-- Border: `1px solid #2a2a2a`
-- Border-radius: `12px`
-- Box shadow: `0 25px 50px rgba(0,0,0,0.5)`
-- Font: JetBrains Mono, 14px
+Scans workspace for marker files:
 
-**Demo Sequences (auto-play, loop):**
+| Detected | Markers |
+|----------|---------|
+| Python | `pyproject.toml`, `setup.py`, `requirements.txt` |
+| FastAPI | `requirements.txt` contains "fastapi" |
+| Django | `requirements.txt` contains "django" |
+| Node.js | `package.json` |
+| Next.js | `package.json` contains `"next"` |
+| React | `package.json` contains `"react"` |
+| Go | `go.mod` |
+| Rust | `Cargo.toml` |
+| Java | `pom.xml`, `build.gradle` |
+| Docker | `Dockerfile`, `docker-compose.yml` |
 
-Sequence 1 — Create Python file:
+Detection result injected into system prompt:
 ```
-qwen2.5-coder ❙ foder ❯ make a password generator in python
-  ▸ write  password_gen.py
-  ◆ foder  Created password_gen.py. Run: python3 password_gen.py
-qwen2.5-coder ❙ foder ❯ python3 password_gen.py
-  $ python3 password_gen.py
-  Generated: xK#9mP2$vL@nQ7
-  ✓  0.12s
-```
-
-Sequence 2 — Build HTML app:
-```
-qwen2.5-coder ❙ foder ❯ create a todo app in vanilla HTML CSS JS
-  ▸ write  index.html
-  ▸ write  style.css
-  ▸ write  app.js
-  ◆ foder  Todo app created. Open index.html in your browser.
+PROJECT: python/fastapi · pkg:pip · test:pytest · build:setuptools/build
+ENTRY POINTS: main.py, app.py
+TEST FRAMEWORK: pytest
 ```
 
-Sequence 3 — Git workflow:
-```
-qwen2.5-coder ❙ foder ❯ /git
-  branch   main
-  changes
-    M  src/App.js
-    ?  style.css
-  recent commits
-    a3f2c1 add dark mode toggle
-```
+### Smart File Selection
 
-**Typing animation:** each character types at 40ms, commands pause 800ms before executing, results appear instantly.
+`find_relevant_files(query, max_files=10)` scoring:
+- Token match in file path: +2pts per token
+- Token match in filename: +1pt per token
+- Language extension match (e.g. "python" → .py): +1.5pts
+- High-value file (README, package.json, etc.): +0.5pts
+- Recently modified (<24h): +0.3pts
 
-**Tab buttons above terminal:** "Python" | "HTML/CSS/JS" | "Git" — click to jump to that sequence.
+Ignored directories: `.git __pycache__ node_modules .venv dist build .next target vendor`
 
 ---
 
-### 6. Themes Showcase Section
+## 8. LLM Client (llm.py)
 
-**Title:** `6 themes. Pick yours.`
-**Subtitle:** `All themes persist across sessions`
+### Timeout Strategy
 
-**Layout:** 6 theme cards in a 3x2 grid (2x3 on mobile)
+```python
+per_token_timeout = max(30.0, LLM_TIMEOUT / 4)   # idle timeout per token
+wall_clock_deadline = now + LLM_TIMEOUT            # hard total deadline
 
-**Each Theme Card:**
-- Mini terminal preview showing the foder prompt in that theme's colors
-- Theme name below
-- Click → entire website switches to that theme (accent color changes everywhere)
-- Active theme: glowing border in that theme's accent color
-- Hover: scale(1.03), border brightens
+httpx.Timeout(
+    connect = 10.0,
+    read    = per_token_timeout,   # resets on each received token
+    write   = 10.0,
+    pool    = 10.0,
+)
+```
 
-**Theme switching animation:**
-- CSS custom properties (`--accent`, `--accent-light`, `--accent-dark`) update
-- All colored elements transition: `transition: color 0.3s, background-color 0.3s, border-color 0.3s`
+Slow-but-alive models work fine (read timeout resets per token). Truly stalled streams are killed.
+
+### Model Keep-Alive
+
+Every request includes `"keep_alive": "10m"` — Ollama keeps the model loaded between requests. On `/exit`, sends `"keep_alive": 0` to free RAM immediately.
+
+### Crash Recovery
+
+`_run_agent_turn()` retries up to 2x on `ConnectError` with 2s sleep between attempts. This handles Ollama restarts and brief disconnections without losing the session.
+
+### Model Auto-Detection
+
+`_detect_default_model()` in `config.py`:
+1. If `OLLAMA_MODEL` env var is set — use it, skip detection
+2. Query `GET /api/tags` with 2s timeout
+3. If configured model is installed — use it
+4. Otherwise prefer in order: `qwen2.5-coder` > `deepseek-coder` > `codellama` > `qwen3` > `qwen2.5` > `llama3` > `mistral` > first available
+5. Called lazily inside `load_project_config()` — never blocks import
 
 ---
 
-### 7. Install Section
+## 9. CLI System (main.py + cli.py)
 
-**Title:** `Get started in 30 seconds`
+### Entry Points
 
-**Three tabs:** Linux/macOS | Windows | Manual
+```
+foder                    interactive REPL
+foder "prompt"           single-turn non-interactive
+foder init               project setup wizard
+foder --help             structured help output
+foder --update           git pull + pip reinstall (preserves ~/.foder/)
+foder --uninstall        pip uninstall + optional ~/.foder/ removal
+foder --timeout <secs>   override LLM_TIMEOUT for this session
+```
 
-**Linux/macOS:**
+### REPL Loop
+
+```
+PromptSession (prompt_toolkit)
+    |
+input parsing:
+    - "/" prefix  -> slash command handler
+    - "!" prefix  -> shell execution
+    - "!!" -> re-run last shell command
+    - known shell cmd (ls, cd, git, ...) -> shell execution
+    - anything else -> @file injection + skill detection + agent turn
+```
+
+### OpenCode-Style Execution Trace
+
+When the agent executes tools, the UI renders:
+
+```
+  ┌ PLANNING ──────────────────────────────────────────────┐
+  ◆ write   src/app.py
+      [ok] written
+  $ exec    pip install -r requirements.txt
+      > Successfully installed fastapi uvicorn
+      [ok]
+  ◆ write   src/models.py
+      [ok] written
+  ◆ write   src/routers/auth.py
+      [ok] written
+  └──────────────────────────────────────────────────────┘  4 tool(s) · 18.3s  DONE
+
+  ◆ foder  Project created. Run: uvicorn src.app:app --reload
+```
+
+State badges: `planning` (cyan) / `executing` (green) / `verifying` (white) / `DONE` (green) / `FAILED` (red)
+
+Tool icons:
+```
+◆  file_write     (green)
+◎  file_read      (green)
+◈  file_edit      (green)
+$  shell_exec     (amber)
+⎇  git_tool       (cyan)
+?  grep_search    (cyan)
+≡  dir_list       (dim)
++  dir_create     (green)
+```
+
+### Prompt Label
+
+```
+qwen3.5 ❙ [~2.1k] main · foder/src ❯
+```
+
+Components:
+- Model name (short, no tag)
+- Token estimate (shown when >500 tokens)
+- Git branch (when in git repo)
+- Workspace-relative path
+- Prompt cursor
+
+---
+
+## 10. Configuration
+
+### Priority (highest to lowest)
+
+1. Environment variable (`OLLAMA_MODEL`, `FODER_WORKSPACE`, etc.)
+2. `foder.json` in workspace root
+3. Built-in defaults
+
+### foder.json Schema
+
+```json
+{
+  "model": "qwen2.5-coder:7b",
+  "instructions": "This project uses Python 3.12, FastAPI, PostgreSQL.",
+  "max_iterations": 15,
+  "llm_timeout": 300,
+  "shell_timeout": 60,
+  "indexing": false,
+  "default_skill": "fastapi_backend"
+}
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OLLAMA_MODEL` | auto-detected | Model to use |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama endpoint |
+| `FODER_WORKSPACE` | `cwd` | Workspace root |
+| `FODER_MAX_ITER` | `20` | Max agent loop iterations |
+| `FODER_LLM_TIMEOUT` | `600` | LLM timeout (seconds) |
+| `FODER_SHELL_TIMEOUT` | `30` | Shell command timeout |
+| `FODER_INSTRUCTIONS` | empty | Custom system prompt suffix |
+
+---
+
+## 11. File Structure
+
+```
+foder/
+├── foder/
+│   ├── main.py          REPL + OpenCode UI + all slash command handlers
+│   ├── agent.py         agent loop + multi-file support + JSON clean
+│   ├── llm.py           Ollama HTTP client + streaming + crash recovery
+│   ├── prompt.py        system prompt builder + planning/review/explain prompts
+│   ├── config.py        config loading + model auto-detection
+│   ├── context.py       project detection + smart file selection
+│   ├── memory.py        3-layer memory (session + workspace + user)
+│   ├── skills.py        skill engine + intent detection + /build mode
+│   ├── commands.py      all slash command implementations
+│   ├── cli.py           --help / --update / --uninstall
+│   ├── audit.py         tool call audit logging
+│   ├── security.py      path jail + command blocklist
+│   └── tools/
+│       ├── registry.py      dispatch + aliases + TOOL_SCHEMAS
+│       ├── file_read.py
+│       ├── file_write.py    creates parent dirs automatically
+│       ├── file_edit.py     str_replace patch-based editing
+│       ├── file_delete.py
+│       ├── file_rename.py
+│       ├── dir_list.py
+│       ├── dir_create.py    idempotent mkdir
+│       ├── dir_remove.py
+│       ├── shell_exec.py    timeout + workspace cwd
+│       ├── grep_search.py   ripgrep + Python fallback
+│       └── git_tool.py
+├── skills/
+│   ├── react_app.json
+│   ├── next_app.json
+│   ├── fastapi_backend.json
+│   ├── django_backend.json
+│   ├── node_api.json
+│   ├── fullstack_app.json
+│   ├── saas_cloner.json
+│   ├── mobile_app.json
+│   ├── auth_system.json
+│   ├── database_schema.json
+│   └── cli_tool.json
+├── foder-website/           separate git repo -> github.com/Frictionalfor/foder-website
+├── install.sh               Linux/macOS installer (official: foder.vercel.app/install.sh)
+├── install.ps1              Windows installer (official: foder.vercel.app/install.ps1)
+├── run_tests.py             live agent tests (requires Ollama)
+├── test_foder.py            unit tests (no Ollama needed)
+├── test_agent_logic.py      agent logic unit tests (no Ollama needed)
+├── pyproject.toml
+├── README.md
+├── CHANGELOG.md
+├── DESIGN.md
+└── TRY_THIS.md
+```
+
+---
+
+## 12. Website Architecture
+
+**Repo:** `github.com/Frictionalfor/foder-website`
+**Deployed:** `foder.vercel.app`
+**Stack:** React 18 + Vite + Tailwind CSS + Framer Motion
+
+### Components
+
+| Component | Purpose |
+|-----------|---------|
+| `Nav.jsx` | Floating pill navbar, scroll-spy active links, live GitHub stars |
+| `Hero.jsx` | ASCII logo (typewriter effect), tagline, install CTA |
+| `StatsBar.jsx` | Animated count-up: 11 skills, 11 tools, 42 tests, 0 cloud calls |
+| `HowItWorks.jsx` | 3-step setup + Ollama→Agent→Tools→Result flow diagram |
+| `Features.jsx` | 9 feature cards with ecosystem badges |
+| `BuildAnything.jsx` | 6 project type cards with skill annotations |
+| `Terminal.jsx` | Animated terminal demo (Python / HTML+CSS / FastAPI / Git tabs) |
+| `Comparison.jsx` | Feature comparison: foder vs OpenCode vs Cursor vs Copilot |
+| `Themes.jsx` | 6 live theme switcher cards |
+| `Install.jsx` | Install tabs (Linux/macOS / Windows / From Source) + lifecycle commands |
+| `Commands.jsx` | Slash command reference table |
+| `Testimonials.jsx` | User quotes |
+| `About.jsx` | Author section with GitHub stats |
+| `Footer.jsx` | 4-column footer + install strip |
+
+### Install Source Rule
+
+**Install:** `https://foder.vercel.app/install.sh` (and `.ps1`)
+**Update:** `https://github.com/Frictionalfor/foder` (git pull)
+
+These are the ONLY official sources. No mirrors. No GitHub raw links for install.
+
+### Theme System
+
+CSS custom properties on `:root`, all animated with `transition: 0.3s`:
+```css
+--accent, --accent-light, --accent-dark
+--bg, --surface, --border
+--text, --text-sec, --text-dim
+```
+
+ThemeContext provides `theme` and `setTheme` to all components.
+
+---
+
+## 13. Deployment
+
+### Foder CLI
+
 ```bash
-git clone https://github.com/Frictionalfor/foder.git
-cd foder
-bash install.sh
-```
+# Official install
+curl -fsSL https://foder.vercel.app/install.sh | bash
 
-**Windows:**
-```powershell
-git clone https://github.com/Frictionalfor/foder.git
+# From source
+git clone https://github.com/Frictionalfor/foder
 cd foder
-powershell -ExecutionPolicy Bypass -File install.ps1
-```
-
-**Manual:**
-```bash
 pip install -e .
 ```
 
-**Then:**
+### Website
+
 ```bash
-ollama pull qwen2.5-coder:3b
-foder
+cd foder-website
+npm install
+npm run build    # outputs to dist/
 ```
 
-**Code blocks:**
-- Dark background, syntax highlighted
-- Copy button top-right of each block
-- Language label top-left (bash / powershell)
-
-**Below install:** "Requires Python 3.10+ and Ollama" with links to both.
+Deployed on Vercel — auto-deploys on push to `master` branch of `foder-website` repo.
 
 ---
 
-### 8. Commands Reference Section
+## 14. Performance Targets
 
-**Title:** `Everything at your fingertips`
-
-**Two-column table:**
-
-| Command | What it does |
-|---------|-------------|
-| `/switch` | Change model mid-session |
-| `/theme` | Pick a color theme |
-| `/git` | Show git status |
-| `/pin @file` | Pin file to every prompt |
-| `/undo` | Revert last file write |
-| `/diff` | Show what changed |
-| `/snapshot` | Save workspace state |
-| `/cost` | Session stats + token usage |
-| `/arch` | Architecture diagram |
-| `!!` | Re-run last shell command |
-| `@filename` | Inject file into prompt |
-| `\` at end of line | Multi-line input |
-
-**Design:** monospace font, accent color for commands, dim for descriptions.
-Hover on each row: subtle highlight.
+| Metric | Target |
+|--------|--------|
+| Cold startup (REPL) | < 1s (excluding Ollama model load) |
+| Token usage per turn | Lean — only last 14 turns sent, tool results truncated to 1200 chars |
+| File injection limit | 60,000 chars (~15k tokens) total for @file / @dir |
+| Tool timeout | 30s default (configurable per project) |
+| LLM timeout | 600s default, wall-clock + per-token idle check |
+| Max agent iterations | 20 per turn (prevents infinite loops) |
+| Ollama model warm-up | keep_alive=10m — stays loaded between turns |
 
 ---
 
-### 9. About / Author Section
+## 15. Testing
 
-**Title:** `Built by a developer, for developers`
+### Test Suites
 
-**Content:**
-- Short paragraph about foder's origin
-- Author card:
-  - Avatar (GitHub profile picture via `https://github.com/Frictionalfor.png`)
-  - Name: Frictionalfor
-  - Bio: "17-year-old developer building tools that make coding faster"
-  - Links: GitHub profile, Twitter/X (if available)
+| `test_foder.py` | Unit tests (42) | No |
+| `test_agent_logic.py` | Agent logic (32) | No |
+| `run_tests.py` | Live integration (10) | Yes |
 
-**GitHub Stats (live via GitHub API):**
-- Stars count
-- Forks count
-- Last updated
-- Language: Python
+### test_foder.py Coverage
 
-**Displayed as:** small stat pills below the repo card
+imports, config defaults, foder.json loading, malformed JSON,
+path escape blocking, valid path, dangerous command blocking, safe commands,
+file_write/read roundtrip, parent dir creation, missing file error,
+dir_list, dir_create, shell_exec, blocked command, non-zero exit code,
+unknown tool, missing param, path escape via tool,
+bare JSON detection, fenced JSON, large payload, nested braces, preamble,
+fenced with indentation, no false positives, history trimming, truncation,
+system message structure, tool names in prompt, workspace dynamic,
+custom instructions, session roundtrip, missing file, corrupted file,
+session trim, @file passthrough, @file inject, @file missing,
+snapshot capture, all themes apply
 
----
+### run_tests.py Tasks
 
-### 10. Footer
-
-**Layout:** 3 columns
-
-**Column 1 — Brand:**
-```
-◆ foder
-Your local AI coding agent.
-v0.1.0
-```
-
-**Column 2 — Links:**
-```
-GitHub Repo
-GitHub Profile
-README
-CHANGELOG
-TRY_THIS
-```
-
-**Column 3 — Community:**
-```
-Report a Bug (GitHub Issues)
-Request a Feature
-Star on GitHub
-```
-
-**Bottom bar:**
-```
-Made with ◆ by Frictionalfor · MIT License · 2026
-```
-
----
-
-## Animations & Transitions — Full Spec
-
-### Page Load
-1. Nav fades in (0ms, 300ms duration)
-2. Hero logo types out character by character (300ms delay, 20ms/char)
-3. Hero text fades up (800ms delay, 500ms duration)
-4. Hero buttons fade up (1100ms delay, 400ms duration)
-5. Install box fades up (1300ms delay, 400ms duration)
-
-### Scroll Animations (Framer Motion `whileInView`)
-- All sections: `initial={{ opacity: 0, y: 40 }}` → `animate={{ opacity: 1, y: 0 }}`
-- Duration: 0.6s, ease: "easeOut"
-- Feature cards: staggered 0.05s between each
-- Stats numbers: count-up animation triggered on viewport entry
-
-### Hover States
-- Cards: `translateY(-4px)`, border glow, 0.2s ease
-- Buttons: `scale(1.05)`, glow shadow, 0.15s ease
-- Nav links: accent color underline slides in from left
-- Theme cards: `scale(1.03)`, 0.2s ease
-- Table rows: background `rgba(accent, 0.05)`
-
-### Terminal Demo
-- Cursor blinks at 1s interval
-- Characters type at 40ms each
-- Command pause: 600ms before "executing"
-- Tool call lines appear with 100ms delay between each
-- Loop: 3s pause between sequences
-
-### Theme Switching
-- All CSS custom properties transition simultaneously
-- Duration: 0.4s
-- Easing: ease-in-out
-- Gradient orbs in hero also change color
-
-### Scroll Behavior
-- Smooth scroll: `scroll-behavior: smooth`
-- Section offset for fixed nav: `scroll-margin-top: 80px`
-- Progress bar at top of page (thin accent-colored line)
-
----
-
-## Responsive Breakpoints
-
-```
-Mobile:   < 640px   (sm)
-Tablet:   640-1024px (md)
-Desktop:  > 1024px  (lg)
-```
-
-- Nav: hamburger on mobile
-- Hero: logo smaller on mobile, buttons stack vertically
-- Features: 1 col mobile, 2 col tablet, 3 col desktop
-- Themes: 2 col mobile, 3 col tablet, 6 col desktop
-- Terminal: full width on mobile, max-width 800px on desktop
-- Footer: stacked on mobile, 3 col on desktop
-
----
-
-## Performance
-
-- Fonts: preloaded via `<link rel="preload">`
-- Images: none (pure CSS/SVG)
-- GitHub API: cached in localStorage for 1 hour
-- Animations: `will-change: transform` on animated elements
-- Code splitting: Vite handles automatically
-- Target: Lighthouse score > 90
-
----
-
-## Deployment
-
-**GitHub Pages:**
-```bash
-npm run build
-# deploy dist/ to gh-pages branch
-```
-
-**Vercel (recommended):**
-- Connect GitHub repo
-- Build command: `npm run build`
-- Output dir: `dist`
-- Auto-deploys on push to main
-
-**Custom domain:** optional, set in Vercel dashboard
-
----
-
-## File Structure
-
-```
-website/
-├── index.html
-├── package.json
-├── vite.config.js
-├── tailwind.config.js
-├── postcss.config.js
-├── src/
-│   ├── main.jsx
-│   ├── App.jsx
-│   ├── index.css          (Tailwind + custom CSS vars)
-│   └── components/
-│       ├── Nav.jsx
-│       ├── Hero.jsx
-│       ├── StatsBar.jsx
-│       ├── Features.jsx
-│       ├── Terminal.jsx
-│       ├── Themes.jsx
-│       ├── Install.jsx
-│       ├── Commands.jsx
-│       ├── About.jsx
-│       └── Footer.jsx
-```
-
----
-
-## Links to Include
-
-| Label | URL |
-|-------|-----|
-| GitHub Repo | https://github.com/Frictionalfor/foder |
-| GitHub Profile | https://github.com/Frictionalfor |
-| Report Bug | https://github.com/Frictionalfor/foder/issues |
-| New Feature | https://github.com/Frictionalfor/foder/issues/new |
-| Releases | https://github.com/Frictionalfor/foder/releases |
-| Ollama | https://ollama.com |
-| Python | https://python.org |
+Single file creation, file with logic, directory creation, list files,
+edit existing file, C file, run Python file,
+multi-file Python package, multi-file HTML+CSS, shell command

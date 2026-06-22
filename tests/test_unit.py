@@ -40,20 +40,29 @@ test("config: defaults are valid", t_config_defaults)
 
 
 def t_config_foder_json():
+    import os
     import foder.config as c
     orig_model   = c.OLLAMA_MODEL
     orig_timeout = c.LLM_TIMEOUT
     orig_ws      = c.WORKSPACE
-    with tempfile.TemporaryDirectory() as d:
-        cfg = Path(d) / "foder.json"
-        cfg.write_text(json.dumps({"model": "test-model:1b", "llm_timeout": 42}))
-        c.WORKSPACE = Path(d)
-        c.load_project_config()
-        assert c.OLLAMA_MODEL == "test-model:1b", f"got {c.OLLAMA_MODEL}"
-        assert c.LLM_TIMEOUT == 42.0, f"got {c.LLM_TIMEOUT}"
-    c.WORKSPACE    = orig_ws
-    c.OLLAMA_MODEL = orig_model
-    c.LLM_TIMEOUT  = orig_timeout
+    # Temporarily unset OLLAMA_MODEL so load_project_config() reads from foder.json
+    # (env vars take precedence by design — the test must not have it set)
+    had_env = "OLLAMA_MODEL" in os.environ
+    os.environ.pop("OLLAMA_MODEL", None)
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d) / "foder.json"
+            cfg.write_text(json.dumps({"model": "test-model:1b", "llm_timeout": 42}))
+            c.WORKSPACE = Path(d)
+            c.load_project_config()
+            assert c.OLLAMA_MODEL == "test-model:1b", f"got {c.OLLAMA_MODEL}"
+            assert c.LLM_TIMEOUT == 42.0, f"got {c.LLM_TIMEOUT}"
+    finally:
+        c.WORKSPACE    = orig_ws
+        c.OLLAMA_MODEL = orig_model
+        c.LLM_TIMEOUT  = orig_timeout
+        if had_env:
+            os.environ["OLLAMA_MODEL"] = orig_model
 
 test("config: foder.json overrides defaults", t_config_foder_json)
 
@@ -331,11 +340,15 @@ test("agent: history trimming caps at limit", t_agent_history_trim)
 
 
 def t_agent_tool_result_truncation():
-    from foder.agent import _truncate_tool_result
-    long = "x" * 2000
+    from foder.agent import _truncate_tool_result, _TOOL_RESULT_MAX_CHARS
+    # Short input — must pass through unchanged
+    short = "x" * 100
+    assert _truncate_tool_result(short) == short
+    # Long input — must be truncated with marker
+    long = "x" * (_TOOL_RESULT_MAX_CHARS * 3)
     result = _truncate_tool_result(long)
-    assert len(result) <= 600
-    assert "truncated" in result
+    assert len(result) <= _TOOL_RESULT_MAX_CHARS + 30, f"len={len(result)}"
+    assert "truncated" in result, "missing truncation marker"
 
 test("agent: tool result truncation works", t_agent_tool_result_truncation)
 

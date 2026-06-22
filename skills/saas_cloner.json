@@ -1,0 +1,57 @@
+{
+  "name": "saas_cloner",
+  "version": "1.0.0",
+  "description": "Clone a SaaS product (Instagram, Twitter, Airbnb, Stripe, etc.) — full-stack with auth, database, and core features.",
+  "tags": ["saas", "clone", "fullstack", "social", "startup"],
+  "intent_keywords": [
+    "clone", "instagram clone", "twitter clone", "airbnb clone", "stripe clone",
+    "saas clone", "build like", "copy of", "replica", "similar to", "like instagram",
+    "like twitter", "like airbnb", "social media app", "marketplace clone"
+  ],
+  "steps": [
+    "Identify which product is being cloned and its 3 CORE features (not everything)",
+    "Choose stack: React frontend + FastAPI backend (default) or Next.js + Express",
+    "Design database schema — identify main entities (User, Post, Like, Follow, etc.)",
+    "Create monorepo: frontend/, backend/, README.md",
+    "Build backend: auth (JWT), core models, CRUD routes, file uploads if needed",
+    "Build frontend: auth flow (login/register), core feed/listing page, key user actions",
+    "Wire frontend API client to backend",
+    "Add responsive CSS (Tailwind) — match the aesthetic of the original",
+    "Run backend, verify auth works, verify core CRUD works",
+    "Run frontend build, verify no errors",
+    "Write root README.md: what it is, how to run both apps"
+  ],
+  "best_practices": [
+    "Focus on 3 core features — not everything. A great MVP beats a broken full clone.",
+    "Start with auth — every SaaS clone needs it and everything else depends on it",
+    "Use fake/seed data to pre-populate the app so it looks alive immediately",
+    "For image-heavy clones (Instagram): use URLs for images, not actual file uploads (simpler)",
+    "Pagination is required for feed-style apps — implement it from the start",
+    "Add loading skeletons on the frontend for async data fetching",
+    "Never store passwords in plaintext — always bcrypt",
+    "README must explain how to start both the backend and frontend"
+  ],
+  "clone_profiles": {
+    "instagram": {
+      "entities": ["User", "Post", "Like", "Comment", "Follow"],
+      "core_features": ["Photo feed with infinite scroll", "User profile with posts grid", "Like and comment on posts"],
+      "stack": "React + FastAPI + SQLite"
+    },
+    "twitter": {
+      "entities": ["User", "Tweet", "Like", "Retweet", "Follow"],
+      "core_features": ["Tweet feed (timeline)", "Post a tweet", "Follow/unfollow users"],
+      "stack": "React + FastAPI + SQLite"
+    },
+    "airbnb": {
+      "entities": ["User", "Listing", "Booking", "Review"],
+      "core_features": ["Browse listings with search/filter", "Listing detail page", "Create a booking"],
+      "stack": "React + FastAPI + SQLite"
+    },
+    "stripe": {
+      "entities": ["User", "Product", "Payment", "Subscription"],
+      "core_features": ["Product catalog", "Checkout flow (mock)", "Payment history dashboard"],
+      "stack": "React + FastAPI + SQLite"
+    }
+  },
+  "system_prompt_injection": "You are building a SaaS clone. Focus on the 3 CORE features that define the product — build them completely and correctly. Create ALL files. Use React + FastAPI + SQLite unless told otherwise. Build backend first (auth + data models + routes), then frontend (auth flow + core UI + API integration). After all files are created, run both apps to verify they start. Fix any errors. The clone must be functional — not just scaffolding."
+}

@@ -1,0 +1,39 @@
+{
+  "name": "mobile_app",
+  "version": "1.0.0",
+  "description": "Scaffold a React Native mobile app with navigation, basic screens, and API integration structure.",
+  "tags": ["mobile", "react-native", "ios", "android", "expo", "navigation"],
+  "intent_keywords": [
+    "mobile app", "react native", "expo app", "ios app", "android app",
+    "mobile application", "react native app", "build mobile", "phone app",
+    "expo", "react native navigation"
+  ],
+  "steps": [
+    "Create Expo project structure: app/, components/, hooks/, services/, constants/, assets/",
+    "Write package.json with expo, react-native, @react-navigation/native, expo-router",
+    "Write app/_layout.tsx — root layout with navigation stack",
+    "Write app/index.tsx — home screen",
+    "Write app/(tabs)/_layout.tsx — tab bar layout if tabs are needed",
+    "Write each screen in app/",
+    "Write reusable components in components/",
+    "Write API service in services/api.ts with fetch wrapper",
+    "Write constants/Colors.ts and constants/Layout.ts",
+    "Write hooks/useColorScheme.ts for dark/light mode",
+    "Run: npx expo install to sync native dependencies",
+    "Verify: npx expo export to check for errors"
+  ],
+  "best_practices": [
+    "Use Expo Router (file-based routing) — simpler than React Navigation alone",
+    "StyleSheet.create() for all styles — never inline style objects",
+    "Use Platform.OS checks sparingly — prefer cross-platform components",
+    "All API calls in services/ — never fetch() directly in components",
+    "Use AsyncStorage for local persistence, not localStorage",
+    "Handle safe area insets with SafeAreaView or useSafeAreaInsets",
+    "Test on both iOS and Android dimensions — 375px and 390px widths are common",
+    "Loading/error states required for every screen that fetches data"
+  ],
+  "templates": {
+    "package.json": "{\"name\":\"{{project_name}}\",\"version\":\"1.0.0\",\"main\":\"expo-router/entry\",\"scripts\":{\"start\":\"expo start\",\"android\":\"expo start --android\",\"ios\":\"expo start --ios\"},\"dependencies\":{\"expo\":\"~51.0.0\",\"expo-router\":\"~3.5.0\",\"react\":\"18.2.0\",\"react-native\":\"0.74.0\",\"@react-navigation/native\":\"^6.1.0\",\"expo-status-bar\":\"~1.12.0\",\"react-native-safe-area-context\":\"4.10.1\",\"react-native-screens\":\"3.31.1\"},\"devDependencies\":{\"typescript\":\"^5.3.0\",\"@types/react\":\"~18.2.0\"}}"
+  },
+  "system_prompt_injection": "You are building a React Native app with Expo and Expo Router. Create ALL files. Use TypeScript. Use StyleSheet.create() for styles. Put all API calls in services/. After creating files, run npx expo export to verify no build errors. Fix any issues before finishing."
+}

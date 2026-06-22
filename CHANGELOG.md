@@ -1,157 +1,172 @@
-# Foder — Changelog & Bug Tracker
+# Foder — Changelog
 
-All bugs fixed, features added, and improvements made during development.
-
----
-
-## Bug Fixes
-
-| # | Bug | Symptom | Fix | File |
-|---|-----|---------|-----|------|
-| 1 | `KeyboardInterrupt` crash on `!sudo apt` | Full traceback on Ctrl+C during shell command | Wrapped `proc.wait()` in `try/except KeyboardInterrupt`, added `proc.kill(); proc.wait()` cleanup | `main.py` |
-| 2 | `KeyboardInterrupt` crash during LLM request | Traceback from deep inside `httpx` socket read | Caught `KeyboardInterrupt` inside `chat()` and `chat_stream()`, converted to `LLMError("[interrupted]")` | `llm.py` |
-| 3 | `[dim]cancelled[/dim]` printed as raw text | Rich markup tags visible in terminal output | Replaced f-string markup with `Text.append(..., style=_DIM)` — `Text` objects don't parse markup strings | `main.py` |
-| 4 | `file_write` creating files instead of directories | `mkdir Todo-List` created a file named `Todo-List` | Added `dir_create` tool with proper `Path.mkdir()` implementation | `tools/dir_create.py` |
-| 5 | `cd Todo-List` going to agent instead of shell | User typed `cd` without `!`, agent tried to execute it | Added `cd` as a direct shell shortcut in the REPL loop | `main.py` |
-| 6 | Tool call JSON leaking into final response | Raw `{"tool": "file_write", ...}` printed as output | Added `_strip_tool_json()` to clean model responses before display | `agent.py` |
-| 7 | Double output — plain text + markdown panel | Response rendered twice (streamed + re-rendered in panel) | Changed `_render_response` to collect tokens silently, render once | `main.py` |
-| 8 | `_TOOL_CALL_MAX_LEN = 512` cutting off large file writes | Model's `file_write` with full file content not detected as tool call | Removed length cap, replaced regex with `json.JSONDecoder.raw_decode()` | `agent.py` |
-| 9 | Fenced JSON with indentation not detected | `\`\`\`json\n    {"tool":...}` not recognized as tool call | Updated `_looks_like_tool_call` to check for `"tool"` + `"parameters"` anywhere in buffer | `agent.py` |
-| 10 | `shell_exec` crash when workspace dir deleted | `[Errno 2] No such file or directory` on temp dir cleanup | Added `if config.WORKSPACE.exists()` check, fallback to `None` cwd | `tools/shell_exec.py` |
-| 11 | Theme not persisting across restarts | Saved blue theme, reopened foder, got green | Stale `_LOGO_COLORS = [green values]` line after `_apply_theme()` overwrote the loaded theme | `main.py` |
-| 12 | `[#6B7280]you[/#6B7280]` printed as raw text | Markup tags visible in "you ›" prompt prefix | Replaced f-string markup with `Text.append(..., style=_DIM)` | `main.py` |
-| 13 | `_on_tool_call() takes 2 positional arguments but 3 were given` | Crash on every agent tool call | `agent.py` was calling `on_tool_call(name, params, None)` — removed extra arg | `agent.py` |
-| 14 | Tool result text shown as final response | `[tool: file_write] parameters: {...} result: [ok]` printed as answer | Fixed `_build_messages` to strip old tool results and anchor current turn correctly | `agent.py` |
-| 15 | `dir_create` looping 14 times | Model kept calling `dir_create` because `exist_ok=True` always returned `[ok] Created` | Added check: if directory already exists, return `[ok] Directory already exists` | `tools/dir_create.py` |
-| 16 | `nano style.css` sent to agent instead of shell | User typed shell command without `!`, agent tried to write a file | Added auto-detection of common shell commands (`nano`, `vim`, `cat`, `git`, `ls`, etc.) | `main.py` |
-| 17 | Token counter `~1.0k` appearing inline with typed text | `~1.0k` appended after `❯` cursor, overlapping user input | Moved token counter before the path in prompt label, not after cursor | `main.py` |
-| 18 | History contamination across sessions | Old tool results from previous session shown as final answer | `_build_messages` was anchoring to first-ever user message; fixed to anchor current turn only | `agent.py` |
-| 19 | `_is_tool_call` false positive on tool results | Tool result messages in history matched `"tool"` + `"parameters"` check | Added `startswith("[tool:")` exclusion to `_is_tool_call` | `agent.py` |
-| 20 | Model writing files to wrong directory after `!cd` | `file_write` used static `WORKSPACE` set at startup | Made `security.py` read `config.WORKSPACE` dynamically; `!cd` now updates `config.WORKSPACE` | `main.py`, `security.py` |
-| 21 | Ollama model cold-load taking 11 seconds | Every new session reloaded model from disk | Added `keep_alive: 10m` to all chat requests; model stays warm between sessions | `llm.py` |
-| 22 | `write/read/write` infinite loop on file tasks | Model wrote file, read it back to verify, rewrote, repeated | Added prompt rule: "After writing a file, do NOT read it back to verify" | `prompt.py` |
-| 23 | `<full game code here>` written to file literally | Prompt example used placeholder text, model copied it | Removed the bad example from system prompt | `prompt.py` |
-| 24 | `_logo_cache` not invalidated on theme change | Logo stayed old color after `/theme` switch | Added `_logo_cache = None` in `_apply_theme()` | `main.py` |
+All changes tracked by version. Most recent first.
 
 ---
 
-## Features Added
+## v0.2.0 — 2026-06-23
 
-| # | Feature | Description | Added in |
-|---|---------|-------------|----------|
-| 1 | Streaming output | Tokens stream to terminal as they arrive from Ollama | agent.py rewrite |
-| 2 | Model auto-detection | On startup, detects all Ollama models and shows picker if configured model not found | main.py |
-| 3 | `/switch` command | Change model mid-session without restarting | main.py |
-| 4 | `!` shell passthrough | Run any terminal command with `!` prefix | main.py |
-| 5 | `!cd` directory navigation | Changes working directory for the session, updates workspace | main.py |
-| 6 | `!!` re-run last command | Re-executes the previous shell command | main.py |
-| 7 | Auto shell detection | Common commands (`ls`, `cd`, `git`, `nano`, etc.) work without `!` | main.py |
-| 8 | Tab completion | `/` commands and `@filenames` complete on Tab | main.py |
-| 9 | Ctrl+R history search | Persistent prompt history across sessions | main.py |
-| 10 | `@file` context injection | `@filename` injects file content into prompt | main.py |
-| 11 | `/pin` / `/unpin` | Pin files to be injected into every prompt automatically | main.py |
-| 12 | Session memory | Last 20 messages saved to `~/.foder/session.json`, resumed on next start | main.py |
-| 13 | `/undo` | Reverts last file write | main.py |
-| 14 | `/diff` | Shows colored diff of last file write | main.py |
-| 15 | `/run` | Auto-detects project type and runs it | main.py |
-| 16 | `/git` | Rich git status panel with branch, changes, recent commits | main.py |
-| 17 | `/snapshot` + `/snapshot diff` | Save workspace state, compare changes | main.py |
-| 18 | `/cost` | Session stats: time, messages, tool calls, files written, ~tokens | main.py |
-| 19 | `/arch` | ASCII architecture diagram | main.py |
-| 20 | `/theme` | 6 color themes (green, teal, amber, rose, blue, lime), persisted | main.py |
-| 21 | 3D logo | Per-character color gradient with extrusion shadow effect | main.py |
-| 22 | Colored `ls` | Directories, files, scripts colored by type | main.py |
-| 23 | `dir_create` tool | Proper directory creation (separate from file_write) | tools/dir_create.py |
-| 24 | `foder.json` project config | Per-project config loaded on startup and on `cd` | config.py |
-| 25 | `foder "prompt"` CLI mode | Non-interactive single-prompt execution | main.py |
-| 26 | Multi-line input | Lines ending with `\` continue on next line | main.py |
-| 27 | Token counter in prompt | Shows `~1.0k` estimate when context grows | main.py |
-| 28 | Git branch in prompt | Shows current branch next to path | main.py |
-| 29 | Risky command confirmation | `sudo`, `rm`, `apt` etc. ask before running | main.py |
-| 30 | Timeout confirmation | Long-running commands ask before terminating | main.py |
-| 31 | Model unload on exit | `/exit` sends `keep_alive: 0` to free RAM | llm.py |
-| 32 | `update.sh` | Auto-updater: pulls latest git, reinstalls | update.sh |
-| 33 | History trimming | Only last 10 messages sent per LLM request | agent.py |
-| 34 | Tool result truncation | Tool results capped at 500 chars in history | agent.py |
-| 35 | Logo caching | 3D logo computed once per theme, cached | main.py |
-| 36 | 42-test suite | Full test coverage: imports, config, security, tools, agent, session, prompt, themes | test_foder.py |
+### Major Features
 
----
+| Feature | Description | Files |
+|---------|-------------|-------|
+| OpenCode-style agent UI | Structured execution trace: `┌ PLANNING ─┐` box with per-tool icons, state badges (PLANNING / EXECUTING / VERIFYING / DONE), elapsed time | `main.py` |
+| Agent state machine | Internal states: IDLE, PLANNING, EXECUTING, VERIFYING, COMPLETED, FAILED — each renders differently in the UI | `main.py` |
+| Multi-file project fix | Agent now correctly loops back to LLM after each tool call, enabling full multi-file project generation without stopping early | `agent.py` |
+| JSON leak fix | `_strip_tool_json()` rewritten with unlimited-pass loop and no lookahead size cap — ALL tool call JSON removed before display | `agent.py` |
+| `/test` command | Auto-detects test framework (pytest / unittest / jest / vitest / go test / cargo test), runs suite, displays pass/fail, auto-suggests fixes on failure | `main.py`, `commands.py` |
+| `/refactor <file>` | Targeted diff-based refactor — uses file_edit only, never rewrites whole file, shows confirmation before applying | `main.py`, `commands.py` |
+| `/chat <question>` | Lightweight Q&A mode — no tools, no system context overhead, fast responses for simple questions | `main.py`, `commands.py` |
+| `/watch [pattern]` | Polling file watcher with 1.5s debounce — triggers agent automatically on file save | `main.py`, `commands.py` |
+| `/doctor` | Full system health check: Python version, pip, foder in PATH, ~/.foder structure, Ollama API, installed models, git, foder.json | `commands.py` |
+| `/compress` | Summarizes and compresses conversation history into a compact context block to reduce token usage | `main.py`, `commands.py` |
+| `/history [query]` | Persistent prompt history saved to `~/.foder/history.jsonl`, searchable by keyword | `main.py`, `commands.py` |
+| `foder init` | Interactive project setup wizard — select model, set instructions, choose skill preset, creates `foder.json` | `main.py` |
+| `foder --timeout <secs>` | Override `LLM_TIMEOUT` for a single session without env vars | `main.py` |
+| `@dir/` multi-file injection | `@src/` injects all relevant files from a directory respecting token budget | `main.py` |
+| Skills system v2 | 11 built-in skills (was 6): added `next_app`, `django_backend`, `mobile_app`, `saas_cloner`, `cli_tool` | `skills/` |
+| Ollama model auto-detect | On startup, detects which model is actually installed and auto-selects it — no manual config needed | `config.py` |
+| Ollama crash recovery | `_run_agent_turn` retries up to 2x on `ConnectError` with 2s backoff | `main.py` |
+| `--timeout` flag | `foder --timeout 300` overrides LLM timeout for the session | `main.py` |
+| `HISTORY_FILE` + `TEMPLATES_DIR` paths | New paths in config for persistent history and template caching | `config.py` |
 
-## Known Limitations
+### Skills Added
 
-| # | Limitation | Notes |
-|---|-----------|-------|
-| 1 | Generation speed | Depends on hardware and model size. Use `qwen2.5-coder:3b` for speed |
-| 2 | Multi-file projects | 3b model sometimes stops after 1-2 files. Use 7b or break into smaller tasks |
-| 3 | Interactive TUI apps | `nano`, `vim` open but may have display issues inside foder's terminal handling |
-| 4 | Windows support | Tested primarily on Linux. Windows install script provided but less tested |
-| 21 | Ollama model cold-load taking 11 seconds | Every new session reloaded model from disk | Added `keep_alive: 10m` to all chat requests; model stays warm between sessions | `llm.py` |
-| 22 | `write/read/write` infinite loop on file tasks | Model wrote file, read it back to verify, rewrote, repeated | Added prompt rule: "After writing a file, do NOT read it back to verify" | `prompt.py` |
-| 23 | `<full game code here>` written to file literally | Prompt example used placeholder text, model copied it | Removed the bad example from system prompt | `prompt.py` |
-| 24 | `_logo_cache` not invalidated on theme change | Logo stayed old color after `/theme` switch | Added `_logo_cache = None` in `_apply_theme()` | `main.py` |
-| 25 | `make a python file` routed to shell as `make` command | `make` was in auto-detect list, conflicted with natural language | Removed `make`, `python`, `python3` from auto-detect list | `main.py` |
-| 26 | `list(clean)` streaming response one character at a time | `_stream_tokens(list("hello"))` = `['h','e','l','l','o']` | Fixed to `_stream_tokens([clean])` — one chunk | `agent.py` |
-| 27 | Multiple tool call JSONs leaking into final response | Two back-to-back tool calls both printed as output | `_strip_tool_json` now loops to remove all JSON blocks, not just the first | `agent.py` |
-| 28 | `file_create` unknown tool error | Model called `file_create` instead of `file_write`, silently failed | Added tool aliases: `file_create`, `write_file`, `bash`, `mkdir`, `run`, etc. | `tools/registry.py` |
-| 29 | Model narrating instead of acting | "I'll start by creating..." instead of calling tool | Added explicit ban on narration phrases in system prompt | `prompt.py` |
-| 30 | Model stopping after `dir_create` without writing files | Created directory then gave final answer without writing any files | Added prompt rule: "after dir_create, IMMEDIATELY write files inside it" | `prompt.py` |
+| Skill | Description |
+|-------|-------------|
+| `next_app` | Next.js 14 App Router + TypeScript + Tailwind CSS |
+| `django_backend` | Django + DRF + PostgreSQL + JWT auth |
+| `mobile_app` | React Native + Expo Router + TypeScript |
+| `saas_cloner` | Clone Instagram / Twitter / Airbnb / Stripe — full-stack |
+| `cli_tool` | Python or Node.js CLI with Rich/Commander |
 
----
+### Bug Fixes
 
-## Features Added
+| # | Bug | Fix |
+|---|-----|-----|
+| 1 | Multi-file projects stop after first file | `agent.py` inner loop now only returns early when leftover text is >10 chars and not a tool call — otherwise loops back to LLM |
+| 2 | Tool call JSON leaking into user output | `_strip_tool_json()` rewritten: unlimited passes, no 300-char lookahead limit, handles 20 tool calls per response |
+| 3 | `_detect_default_model()` hanging on import | Changed `httpx.get(timeout=3.0)` to explicit `httpx.Timeout(connect=2.0, read=2.0)` — prevents blocking import |
+| 4 | `~/.foder/skills/` missing causing doctor FAIL | `/doctor` now auto-creates missing directories instead of failing |
+| 5 | `qwen2.5-coder:3b` shown as FAIL when different model installed | Downgraded to `[WARN]` with `[INFO] Auto-using: <model>` message |
+| 6 | `OLLAMA_MODEL` env var ignored by `load_project_config` | Fixed precedence check — env var always wins over foder.json |
+| 7 | `_TOOL_RESULT_MAX_CHARS = 800` too small for complex outputs | Raised to 1200 — reduces truncation on shell output and file listings |
+| 8 | Test runner using deleted workspace path | `run_tests.py` updated to use `~/timepass` — created automatically |
+| 9 | `config: foder.json overrides defaults` test failing when OLLAMA_MODEL env set | Test now temporarily unsets env var during assertion |
+| 10 | `agent: tool result truncation` test using hardcoded threshold | Test now imports `_TOOL_RESULT_MAX_CHARS` and checks against it |
 
-| # | Feature | Description | Added in |
-|---|---------|-------------|----------|
-| 1 | Streaming output | Tokens stream to terminal as they arrive from Ollama | agent.py rewrite |
-| 2 | Model auto-detection | On startup, detects all Ollama models and shows picker if configured model not found | main.py |
-| 3 | `/switch` command | Change model mid-session without restarting | main.py |
-| 4 | `!` shell passthrough | Run any terminal command with `!` prefix | main.py |
-| 5 | `!cd` directory navigation | Changes working directory for the session, updates workspace | main.py |
-| 6 | `!!` re-run last command | Re-executes the previous shell command | main.py |
-| 7 | Auto shell detection | Common commands (`ls`, `cd`, `git`, `nano`, etc.) work without `!` | main.py |
-| 8 | Tab completion | `/` commands and `@filenames` complete on Tab | main.py |
-| 9 | Ctrl+R history search | Persistent prompt history across sessions | main.py |
-| 10 | `@file` context injection | `@filename` injects file content into prompt | main.py |
-| 11 | `/pin` / `/unpin` | Pin files to be injected into every prompt automatically | main.py |
-| 12 | Session memory | Last 20 messages saved to `~/.foder/session.json`, resumed on next start | main.py |
-| 13 | `/undo` | Reverts last file write | main.py |
-| 14 | `/diff` | Shows colored diff of last file write | main.py |
-| 15 | `/run` | Auto-detects project type and runs it | main.py |
-| 16 | `/git` | Rich git status panel with branch, changes, recent commits | main.py |
-| 17 | `/snapshot` + `/snapshot diff` | Save workspace state, compare changes | main.py |
-| 18 | `/cost` | Session stats: time, messages, tool calls, files written, ~tokens | main.py |
-| 19 | `/arch` | ASCII architecture diagram | main.py |
-| 20 | `/theme` | 6 color themes (green, teal, amber, rose, blue, lime), persisted | main.py |
-| 21 | 3D logo | Per-character color gradient with extrusion shadow effect | main.py |
-| 22 | Colored `ls` | Directories, files, scripts colored by type | main.py |
-| 23 | `dir_create` tool | Proper directory creation (separate from file_write) | tools/dir_create.py |
-| 24 | Tool aliases | `file_create`, `bash`, `mkdir`, `run` etc. all route to correct tools | tools/registry.py |
-| 25 | `foder.json` project config | Per-project config loaded on startup and on `cd` | config.py |
-| 26 | `foder "prompt"` CLI mode | Non-interactive single-prompt execution | main.py |
-| 27 | Multi-line input | Lines ending with `\` continue on next line | main.py |
-| 28 | Token counter in prompt | Shows `~1.0k` estimate when context grows | main.py |
-| 29 | Git branch in prompt | Shows current branch next to path | main.py |
-| 30 | Risky command confirmation | `sudo`, `rm`, `apt` etc. ask before running | main.py |
-| 31 | Timeout confirmation | Long-running commands ask before terminating | main.py |
-| 32 | Model unload on exit | `/exit` sends `keep_alive: 0` to free RAM | llm.py |
-| 33 | `update.sh` | Auto-updater: pulls latest git, reinstalls | update.sh |
-| 34 | History trimming | Only last 10 messages sent per LLM request | agent.py |
-| 35 | Tool result truncation | Tool results capped at 500 chars in history | agent.py |
-| 36 | Logo caching | 3D logo computed once per theme, cached | main.py |
-| 37 | 42-test suite | Full test coverage: imports, config, security, tools, agent, session, prompt, themes | test_foder.py |
-| 38 | `TRY_THIS.md` | Curated test prompts for users to try | TRY_THIS.md |
-| 39 | `CHANGELOG.md` | Full bug tracker and feature log | CHANGELOG.md |
-| 40 | Website design doc | Complete spec for foder landing page (React + Tailwind + Framer Motion) | DESIGN.md |
+### Website Updates
+
+| Change | Description |
+|--------|-------------|
+| Terminal demo fixed | Idle cursor no longer shows "qw" — fixed height container, separated prefix from text, only shows idle cursor after full sequence |
+| Emoji removed | `🔒` → `[S]`, `⚛` → `[R]` — standard ASCII only |
+| Install commands updated | All install commands now point to `https://foder.vercel.app/install.sh` (official source) |
+| `HowItWorks` redesigned | Shows Ollama → Agent → Tools → Workspace → Result flow diagram |
+| `Features` upgraded | 9 features with ecosystem badges: Local-First AI, Project Generation, Skills System, File Ops, Shell, Memory, Secure Sandbox, Context Injection, Git-Aware |
+| `BuildAnything` upgraded | 6 project categories with skill annotations, SaaS cloner added |
+| `Comparison` redesigned | Now compares against OpenCode instead of Claude Code — added rows for project generation, skills system, works without internet |
+| `StatsBar` updated | Shows 11 skills, 11 tools, 42 tests, 6 themes, 0 cloud calls, 100% local |
+| `Footer` updated | 4-column layout with install strip showing official curl command |
+| `Nav` updated | Skills link added |
+| Terminal demo added | FastAPI tab added alongside Python, HTML/CSS/JS, Git |
 
 ---
 
-## Known Limitations
+## v0.1.0 — 2026-05-01 (initial release)
 
-| # | Limitation | Notes |
-|---|-----------|-------|
-| 1 | Generation speed | Depends on hardware and model size. Use `qwen2.5-coder:3b` for speed |
-| 2 | Multi-file projects | 3b model sometimes stops after 1-2 files. Use 7b or break into smaller tasks |
-| 3 | Interactive TUI apps | `nano`, `vim` open but may have display issues inside foder's terminal handling |
-| 4 | Windows support | Tested primarily on Linux. Windows install script provided but less tested |
-| 5 | Model narration | Smaller models (3b) sometimes describe steps instead of acting. Use 7b for complex tasks |
+### Agent Core
+
+| Feature | Description |
+|---------|-------------|
+| Streaming output | Tokens stream live from Ollama to terminal |
+| Tool call detection | Handles bare JSON, fenced JSON, preamble text |
+| Code block fallback | Converts `\`\`\`python...` to `file_write` tool call |
+| Loop detection | SHA-1 response dedup + per-tool call counter |
+| Error recovery | Self-correction with up to 2 retries on tool failure |
+| History management | Last 14 turns sent per request, hard cap 60 in memory |
+
+### Tools (11 total)
+
+`file_read` `file_write` `file_edit` `file_delete` `file_rename`
+`dir_list` `dir_create` `dir_remove`
+`shell_exec` `grep_search` `git_tool`
+
+Plus 30+ tool aliases (`file_create`, `bash`, `mkdir`, `run`, `grep`, etc.)
+
+### CLI
+
+| Feature | Description |
+|---------|-------------|
+| Interactive REPL | prompt_toolkit with tab completion, history, multi-line input |
+| 6 color themes | green, teal, amber, rose, blue, lime — persisted in `~/.foder/theme.json` |
+| 3D ASCII logo | Per-character color gradient, cached per theme |
+| Shell passthrough | `!cmd`, `!!`, auto-detect for `ls cd git nano vim python3 npm cargo go` |
+| `@file` injection | Injects file content into prompt |
+| `/pin` / `/unpin` | Pin files to every prompt |
+| Session memory | Last 20 messages saved to `~/.foder/session.json` |
+| `/undo` / `/diff` | Revert last write, show colored diff |
+| `/snapshot` | Save workspace state, diff later |
+| `/cost` | Session stats: time, messages, tool calls, ~tokens |
+| `/arch` | ASCII architecture diagram |
+
+### Skills System v1 (6 skills)
+
+`react_app` `fastapi_backend` `node_api` `fullstack_app` `auth_system` `database_schema`
+
+Auto-detection: keyword scoring (phrase=3pts, word=1pt, threshold=2pts)
+
+### Memory System
+
+| Layer | Storage | Contents |
+|-------|---------|---------|
+| Session | RAM | Current conversation |
+| Workspace | `.foder/memory.json` | Facts, architecture notes, decisions, instructions |
+| User | `~/.foder/preferences.json` | Model, theme, coding style |
+
+### Security
+
+- Workspace path jail (all file ops restricted to WORKSPACE)
+- Dangerous command blocklist (`rm -rf /`, `shutdown`, `mkfs`, etc.)
+- Risky command confirmation (`sudo`, `apt`, `rm`, `curl`, etc.)
+- Shell timeouts + audit log to `~/.foder/audit.log`
+
+### Installers
+
+- `install.sh` — Linux/macOS, detects Python 3.10+, checks Ollama, handles pip install edge cases
+- `install.ps1` — Windows PowerShell, mirrors bash installer
+- Official source: `https://foder.vercel.app`
+
+---
+
+## Bug History (v0.1.0 development)
+
+| # | Bug | Fix |
+|---|-----|-----|
+| 1 | `KeyboardInterrupt` crash on `!sudo apt` | Wrapped `proc.wait()` in try/except, added `proc.kill()` cleanup |
+| 2 | `KeyboardInterrupt` crash during LLM request | Caught in `chat()` and `chat_stream()`, converted to `LLMError("[interrupted]")` |
+| 3 | Rich markup printed as raw text | Replaced f-string markup with `Text.append(..., style=...)` objects |
+| 4 | `file_write` creating files instead of dirs | Added `dir_create` tool with `Path.mkdir()` |
+| 5 | `cd` sent to agent instead of shell | Added `cd` as direct shell shortcut in REPL loop |
+| 6 | Tool call JSON leaking into response | Added `_strip_tool_json()` to clean responses |
+| 7 | Double output (stream + Markdown panel) | `_render_response` collects tokens once, renders once |
+| 8 | `_TOOL_CALL_MAX_LEN = 512` cutting off large writes | Removed cap, replaced regex with `JSONDecoder.raw_decode()` |
+| 9 | Fenced JSON with indentation not detected | Updated `_is_tool_call` to check for `"tool"` + `"parameters"` anywhere |
+| 10 | `shell_exec` crash when workspace deleted | Added `if config.WORKSPACE.exists()` check |
+| 11 | Theme not persisting | `_logo_cache = None` added to `_apply_theme()` |
+| 12 | `_on_tool_call()` takes 2 args but 3 given | Removed extra `None` arg from agent.py call |
+| 13 | Tool result shown as final response | Fixed `_build_messages` anchor logic |
+| 14 | `dir_create` looping 14 times | Return "already exists" instead of "[ok] Created" on second call |
+| 15 | `nano style.css` sent to agent | Added common shell commands to auto-detect list |
+| 16 | Token counter `~1.0k` appearing inline | Moved counter before path in prompt label |
+| 17 | History contamination across sessions | Fixed turn anchor logic in `_build_messages` |
+| 18 | `_is_tool_call` false positive on tool results | Added `startswith("[tool:")` exclusion |
+| 19 | File write to wrong dir after `!cd` | `security.py` reads `config.WORKSPACE` dynamically |
+| 20 | Ollama cold-load 11 seconds | Added `keep_alive: 10m` to all chat requests |
+| 21 | `write/read/write` infinite loop | Added prompt rule: never read a file back to verify after writing |
+| 22 | `<full game code here>` written literally | Removed placeholder example from system prompt |
+| 23 | `make a python file` triggering `make` | Removed `make`, `python`, `python3` from auto-detect shell list |
+| 24 | `list(clean)` streams one character at a time | Fixed to `_stream_tokens([clean])` — one chunk not one char |
+| 25 | `file_create` unknown tool | Added 30+ tool aliases to registry |
+| 26 | Model narrating instead of acting | Added explicit ban on narration in system prompt |
+| 27 | Model stopping after `dir_create` | Prompt rule: after mkdir, immediately write files inside it |

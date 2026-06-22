@@ -1,0 +1,42 @@
+{
+  "name": "database_schema",
+  "version": "2.0.0",
+  "description": "Design and implement a complete database schema for any application — entities, relationships, migrations, and seed data.",
+  "tags": ["database", "schema", "sql", "sqlite", "postgresql", "models", "orm", "migrations"],
+  "intent_keywords": [
+    "database schema", "data model", "design database", "create schema", "sql schema",
+    "db design", "database design", "erd", "entity relationship", "db schema",
+    "tables", "data structure", "data layer"
+  ],
+  "steps": [
+    "Analyze requirements — list every noun (entity) and action (relationship)",
+    "Identify relationship types: one-to-one, one-to-many, many-to-many",
+    "Draw the entity-relationship diagram as an ASCII table tree in a comment",
+    "Choose database: SQLite (dev/simple), PostgreSQL (production/scale)",
+    "Write SQLAlchemy models — one model per table, all in models.py or models/ folder",
+    "Add created_at, updated_at, deleted_at (soft delete) timestamps to every table",
+    "Add foreign key constraints with cascade rules",
+    "Add indexes on: all foreign keys, columns in WHERE/ORDER BY/JOIN",
+    "Create many-to-many junction tables with explicit id primary keys",
+    "Write a database.py with engine, SessionLocal, and Base",
+    "Write a seed.py with realistic fake data using a seeding loop",
+    "Write a README section explaining: schema diagram, how to run migrations, how to seed"
+  ],
+  "best_practices": [
+    "Always use surrogate integer primary keys (id: int, primary_key=True)",
+    "Use snake_case for all table and column names",
+    "Index every foreign key column automatically",
+    "Add index=True to any column that appears in search filters",
+    "NOT NULL for required fields, nullable=True only when truly optional",
+    "Many-to-many: always explicit junction table with its own id, created_at",
+    "Soft deletes: deleted_at nullable DATETIME instead of physical DELETE",
+    "Use TEXT for user-generated content, VARCHAR(n) only for fixed-format fields",
+    "Store passwords as bcrypt hashes — never plaintext, never MD5",
+    "Store monetary values as INTEGER (cents) — never FLOAT",
+    "JSON columns for flexible metadata, not as a substitute for proper normalization"
+  ],
+  "templates": {
+    "database.py": "from sqlalchemy import create_engine\nfrom sqlalchemy.orm import sessionmaker, DeclarativeBase\n\nDATABASE_URL = 'sqlite:///./app.db'\nengine = create_engine(DATABASE_URL, connect_args={'check_same_thread': False})\nSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)\n\nclass Base(DeclarativeBase):\n    pass\n\ndef get_db():\n    db = SessionLocal()\n    try:\n        yield db\n    finally:\n        db.close()"
+  },
+  "system_prompt_injection": "You are a database architect. Analyze the requirements and design a complete, production-quality schema. Write SQLAlchemy models with all relationships, constraints, indexes, and timestamps. Include a database.py setup file and a seed.py with realistic fake data. After writing all files, verify Python syntax is correct. Document the schema with an ASCII diagram."
+}

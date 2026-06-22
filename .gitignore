@@ -1,14 +1,47 @@
+# ── Python build artifacts ─────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
-*.egg-info/
+*.so
 *.egg
+*.egg-info/
 dist/
 build/
 .eggs/
+MANIFEST
+
+# ── Virtual environments ───────────────────────────────────────────────────────
 .env
 .venv
 venv/
 env/
-website/
+ENV/
+.python-version
+
+# ── Foder runtime (user data, not source) ─────────────────────────────────────
+.foder/
+*.foder_backup*
+timepass/
+
+# ── Test / CI artifacts ────────────────────────────────────────────────────────
+.pytest_cache/
+.benchmarks/
+htmlcov/
+.coverage
+coverage.xml
+*.cover
+
+# ── Editors ────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Website (separate repo: github.com/Frictionalfor/foder-website) ───────────
+foder-website/

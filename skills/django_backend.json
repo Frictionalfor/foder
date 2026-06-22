@@ -1,0 +1,43 @@
+{
+  "name": "django_backend",
+  "version": "1.0.0",
+  "description": "Build a production-ready Django + Django REST Framework backend with PostgreSQL, JWT auth, and structured API.",
+  "tags": ["django", "python", "drf", "rest", "api", "backend", "postgresql"],
+  "intent_keywords": [
+    "django", "django rest", "drf", "django api", "django backend",
+    "django project", "build with django", "django rest framework",
+    "django postgresql", "django auth"
+  ],
+  "steps": [
+    "Create project structure: config/ (settings), apps/<appname>/, requirements.txt",
+    "Write requirements.txt: django, djangorestframework, djangorestframework-simplejwt, psycopg2-binary, django-cors-headers, python-decouple",
+    "Write config/settings.py with split base/dev/prod pattern using python-decouple",
+    "Write config/urls.py with API router and auth token endpoints",
+    "Write config/wsgi.py and config/asgi.py",
+    "For each app: write models.py, serializers.py, views.py (ViewSets), urls.py",
+    "Write apps/users/ with custom User model extending AbstractBaseUser or AbstractUser",
+    "Add JWT auth: configure simplejwt settings, add /api/token/ and /api/token/refresh/ URLs",
+    "Write .env.example with required environment variables",
+    "Add django-cors-headers middleware and CORS_ALLOWED_ORIGINS config",
+    "Run: pip install -r requirements.txt",
+    "Run: python manage.py migrate",
+    "Run: python manage.py runserver to verify startup"
+  ],
+  "best_practices": [
+    "Always use a custom User model — never rely on Django's built-in User for a real project",
+    "Use ViewSets + Routers — less boilerplate, consistent URL patterns",
+    "Separate serializers per use case: CreateSerializer vs ResponseSerializer where they differ",
+    "Use python-decouple for environment config — never hardcode secrets",
+    "Add pagination to every list endpoint (PageNumberPagination, default 20)",
+    "Return consistent error format: {detail: string} or {field: [errors]}",
+    "Add django-filter for query param filtering on list endpoints",
+    "Use select_related/prefetch_related to avoid N+1 queries",
+    "Write a management command for seed data: python manage.py seed_data",
+    "Use PostgreSQL in dev too — SQLite differences cause production surprises"
+  ],
+  "templates": {
+    "requirements.txt": "django>=5.0\ndjangorestframework>=3.15\ndjangorestframework-simplejwt>=5.3\npsycopg2-binary>=2.9\ndjango-cors-headers>=4.3\npython-decouple>=3.8\ndjango-filter>=24.0",
+    ".env.example": "SECRET_KEY=your-secret-key-here\nDEBUG=True\nDB_NAME=mydb\nDB_USER=postgres\nDB_PASSWORD=postgres\nDB_HOST=localhost\nDB_PORT=5432\nALLOWED_HOSTS=localhost,127.0.0.1\nCORS_ALLOWED_ORIGINS=http://localhost:3000"
+  },
+  "system_prompt_injection": "You are building a Django REST Framework backend. Use a custom User model, ViewSets with Routers, and JWT auth. Create ALL files. Write complete, working Python. Use python-decouple for settings. After creating all files, run pip install -r requirements.txt, then python manage.py migrate, then python manage.py runserver to verify. Fix any errors before finishing."
+}

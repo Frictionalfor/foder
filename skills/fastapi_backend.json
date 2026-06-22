@@ -1,0 +1,37 @@
+{
+  "name": "fastapi_backend",
+  "version": "1.0.0",
+  "description": "Build a production-ready FastAPI backend with SQLite, Pydantic models, and JWT auth.",
+  "tags": ["python", "fastapi", "api", "backend", "rest", "sqlite"],
+  "intent_keywords": ["fastapi", "api backend", "rest api", "python api", "backend", "api server", "python server"],
+  "steps": [
+    "Create project structure: app/, app/routers/, app/models/, app/schemas/, app/core/",
+    "Write requirements.txt with fastapi, uvicorn[standard], pydantic, sqlalchemy, python-jose[cryptography], passlib[bcrypt]",
+    "Write app/__init__.py (empty)",
+    "Write app/core/config.py with Settings using pydantic BaseSettings",
+    "Write app/core/database.py with SQLAlchemy engine and SessionLocal",
+    "Write app/core/security.py with password hashing and JWT token creation/verification",
+    "Write app/models/*.py with SQLAlchemy ORM models",
+    "Write app/schemas/*.py with Pydantic request/response schemas",
+    "Write app/routers/*.py with APIRouter for each resource",
+    "Write app/main.py with FastAPI app, CORS middleware, and router includes",
+    "Run: pip install -r requirements.txt",
+    "Run: python -m uvicorn app.main:app --reload to verify startup"
+  ],
+  "best_practices": [
+    "Use Pydantic v2 model_config = ConfigDict(from_attributes=True) for ORM mode",
+    "Separate concerns: routers handle HTTP, services handle business logic",
+    "Use Depends() for dependency injection (DB session, current user)",
+    "Return consistent response shapes: {data, message, status}",
+    "Use HTTPException with appropriate status codes",
+    "Hash passwords with bcrypt — never store plaintext",
+    "JWT tokens: access token (15min) + refresh token (7 days)",
+    "Add CORS middleware with explicit origins in production",
+    "Use alembic for migrations in production (include basic setup)"
+  ],
+  "templates": {
+    "requirements.txt": "fastapi>=0.111.0\nuvicorn[standard]>=0.30.0\npydantic>=2.7.0\npydantic-settings>=2.3.0\nsqlalchemy>=2.0.30\npython-jose[cryptography]>=3.3.0\npasslib[bcrypt]>=1.7.4\npython-multipart>=0.0.9",
+    "app/main.py": "from fastapi import FastAPI\nfrom fastapi.middleware.cors import CORSMiddleware\n\napp = FastAPI(title='{{project_name}} API', version='0.1.0')\n\napp.add_middleware(CORSMiddleware, allow_origins=['*'], allow_credentials=True, allow_methods=['*'], allow_headers=['*'])\n\n@app.get('/health')\ndef health(): return {'status': 'ok'}"
+  },
+  "system_prompt_injection": "You are building a FastAPI backend. Create ALL files in the steps. Write complete, working Python code. Use SQLAlchemy for the database, Pydantic for schemas, and JWT for auth. After creating files, run pip install -r requirements.txt then python -m uvicorn app.main:app to verify it starts. Fix any import errors before finishing."
+}

@@ -1,0 +1,35 @@
+{
+  "name": "node_api",
+  "version": "1.0.0",
+  "description": "Build a Node.js/Express REST API with JWT auth, SQLite via better-sqlite3, and Zod validation.",
+  "tags": ["nodejs", "express", "api", "backend", "javascript", "rest"],
+  "intent_keywords": ["node api", "express api", "nodejs backend", "node server", "express server", "nodejs api"],
+  "steps": [
+    "Create project structure: src/, src/routes/, src/middleware/, src/db/, src/schemas/",
+    "Write package.json with express, better-sqlite3, jsonwebtoken, bcryptjs, zod, dotenv",
+    "Write src/db/database.js with SQLite setup and schema creation",
+    "Write src/middleware/auth.js with JWT verification middleware",
+    "Write src/middleware/validate.js with Zod schema validation middleware",
+    "Write src/schemas/ Zod schemas for each resource",
+    "Write src/routes/ Express routers for each resource",
+    "Write src/app.js with Express app setup, middleware, and route mounting",
+    "Write src/index.js entry point with server listen",
+    "Write .env.example with required environment variables",
+    "Run: npm install",
+    "Run: node src/index.js to verify startup"
+  ],
+  "best_practices": [
+    "Use ES modules (type: module in package.json) with import/export",
+    "Validate all input with Zod before processing",
+    "Use async/await with try/catch — avoid callback style",
+    "Hash passwords with bcryptjs (cost factor 12)",
+    "Return JSON with consistent shape: {success, data, error}",
+    "Use 422 for validation errors, 401 for auth, 403 for forbidden",
+    "Environment variables via dotenv — never hardcode secrets",
+    "Add request logging with a simple middleware"
+  ],
+  "templates": {
+    "package.json": "{\"name\":\"{{project_name}}\",\"version\":\"0.1.0\",\"type\":\"module\",\"main\":\"src/index.js\",\"scripts\":{\"start\":\"node src/index.js\",\"dev\":\"node --watch src/index.js\"},\"dependencies\":{\"express\":\"^4.19.2\",\"better-sqlite3\":\"^9.6.0\",\"jsonwebtoken\":\"^9.0.2\",\"bcryptjs\":\"^2.4.3\",\"zod\":\"^3.23.8\",\"dotenv\":\"^16.4.5\"}}"
+  },
+  "system_prompt_injection": "You are building a Node.js Express API. Use ES modules. Create ALL files in the steps. Write complete, working JavaScript. After creating files, run npm install then node src/index.js to verify startup. Fix any errors before finishing."
+}

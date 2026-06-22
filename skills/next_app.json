@@ -1,0 +1,45 @@
+{
+  "name": "next_app",
+  "version": "1.0.0",
+  "description": "Build a Next.js 14+ App Router application with TypeScript, Tailwind CSS, and API routes.",
+  "tags": ["nextjs", "react", "typescript", "frontend", "fullstack", "app-router"],
+  "intent_keywords": [
+    "next.js", "nextjs", "next app", "app router", "next project",
+    "next.js app", "build with next", "next typescript", "next tailwind"
+  ],
+  "steps": [
+    "Create project structure: app/, app/api/, components/, lib/, public/, types/",
+    "Write package.json with next, react, react-dom, typescript, tailwindcss, @types/*",
+    "Write tsconfig.json with strict mode and path aliases (@/* -> ./*)",
+    "Write next.config.mjs",
+    "Write tailwind.config.ts and postcss.config.mjs",
+    "Write app/layout.tsx — root layout with metadata, font, and Tailwind globals",
+    "Write app/globals.css with Tailwind directives",
+    "Write app/page.tsx — home page",
+    "Write each additional page as app/<route>/page.tsx",
+    "Write API routes as app/api/<route>/route.ts using NextRequest/NextResponse",
+    "Write reusable components in components/",
+    "Write utility functions in lib/",
+    "Run: npm install",
+    "Run: npm run build to verify no TypeScript or build errors"
+  ],
+  "best_practices": [
+    "Use App Router (app/ directory) — NOT pages/ directory",
+    "Server Components by default — add 'use client' only when needed (event handlers, hooks)",
+    "Collocate page-specific components inside the route folder",
+    "Use next/font for fonts — never import from Google Fonts directly",
+    "Use next/image for all images — never <img> tags",
+    "Use next/link for navigation — never <a> tags for internal links",
+    "API routes: use NextRequest/NextResponse, NOT the old req/res pattern",
+    "Environment variables: NEXT_PUBLIC_ prefix for client-side, plain for server-only",
+    "Loading UI: create loading.tsx alongside every page that fetches data",
+    "Error handling: create error.tsx as a client component for error boundaries",
+    "Use TypeScript strict mode — no 'any' types without explicit justification"
+  ],
+  "templates": {
+    "package.json": "{\"name\":\"{{project_name}}\",\"version\":\"0.1.0\",\"private\":true,\"scripts\":{\"dev\":\"next dev\",\"build\":\"next build\",\"start\":\"next start\",\"lint\":\"next lint\"},\"dependencies\":{\"next\":\"^14.2.0\",\"react\":\"^18.3.0\",\"react-dom\":\"^18.3.0\"},\"devDependencies\":{\"typescript\":\"^5.4.0\",\"@types/node\":\"^20.0.0\",\"@types/react\":\"^18.3.0\",\"@types/react-dom\":\"^18.3.0\",\"tailwindcss\":\"^3.4.0\",\"autoprefixer\":\"^10.4.0\",\"postcss\":\"^8.4.0\"}}",
+    "tsconfig.json": "{\"compilerOptions\":{\"target\":\"ES2017\",\"lib\":[\"dom\",\"dom.iterable\",\"esnext\"],\"allowJs\":true,\"skipLibCheck\":true,\"strict\":true,\"noEmit\":true,\"esModuleInterop\":true,\"module\":\"esnext\",\"moduleResolution\":\"bundler\",\"resolveJsonModule\":true,\"isolatedModules\":true,\"jsx\":\"preserve\",\"incremental\":true,\"plugins\":[{\"name\":\"next\"}],\"paths\":{\"@/*\":[\".\/*\"]}},\"include\":[\"next-env.d.ts\",\"**/*.ts\",\"**/*.tsx\",\".next/types/**/*.ts\"],\"exclude\":[\"node_modules\"]}",
+    "next.config.mjs": "/** @type {import('next').NextConfig} */\nconst nextConfig = {}\nexport default nextConfig"
+  },
+  "system_prompt_injection": "You are building a Next.js 14 App Router application with TypeScript and Tailwind CSS. Use the app/ directory — NOT pages/. Server Components by default, 'use client' only when needed. Create ALL files. Write complete, working TypeScript — no 'any' types. After creating files, run npm install then npm run build to verify. Fix all TypeScript and build errors before finishing."
+}

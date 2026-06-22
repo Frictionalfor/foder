@@ -1,0 +1,35 @@
+{
+  "name": "cli_tool",
+  "version": "1.0.0",
+  "description": "Build a professional CLI tool in Python or Node.js — argument parsing, subcommands, colored output, config file.",
+  "tags": ["cli", "command-line", "tool", "python", "nodejs", "terminal"],
+  "intent_keywords": [
+    "cli tool", "command line tool", "terminal tool", "command line app",
+    "cli app", "build cli", "create cli", "make a cli", "terminal application",
+    "script tool", "utility tool", "automation cli"
+  ],
+  "steps": [
+    "Choose language: Python (default, uses argparse/click/typer) or Node.js (uses commander)",
+    "Design the command structure: main command + subcommands + flags",
+    "Write the entry point with argument parsing and subcommand routing",
+    "Implement each subcommand as a separate function or file",
+    "Add colored output using Rich (Python) or chalk (Node.js)",
+    "Add a config file reader (~/.toolname/config.json or .toolnamerc)",
+    "Add help text for every command and flag",
+    "Add version flag (--version)",
+    "Write a setup.py/pyproject.toml or package.json for distribution",
+    "Test every command manually in a shell",
+    "Write a README with usage examples for each command"
+  ],
+  "best_practices": [
+    "Use Rich/Typer for Python CLIs — far better UX than argparse alone",
+    "Commands should print nothing on success unless user asks for verbose",
+    "Use exit code 0 for success, non-zero for errors — always",
+    "Support --json flag for machine-readable output on data-outputting commands",
+    "Config priority: flags > env vars > config file > defaults",
+    "Never crash with a traceback — catch errors and print a clean message",
+    "Include --dry-run for destructive operations",
+    "Tab completion is a bonus: typer and click both support it natively"
+  ],
+  "system_prompt_injection": "You are building a professional CLI tool. Design a clean command structure first. Write complete, working code with argument parsing, colored output, help text, and error handling. Install dependencies, then test every command to verify it works. Fix any issues before finishing."
+}

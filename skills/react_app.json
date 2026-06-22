@@ -1,0 +1,39 @@
+{
+  "name": "react_app",
+  "version": "1.0.0",
+  "description": "Build a complete React application with Vite, Tailwind CSS, and React Router.",
+  "tags": ["react", "frontend", "vite", "spa", "javascript", "typescript"],
+  "intent_keywords": ["react app", "react project", "react site", "frontend app", "spa", "vite app"],
+  "steps": [
+    "Create project structure: src/components/, src/pages/, src/hooks/, src/utils/, public/",
+    "Write index.html with Vite entry point",
+    "Write package.json with react, react-dom, react-router-dom, vite, @vitejs/plugin-react, tailwindcss",
+    "Write vite.config.js",
+    "Write tailwind.config.js and postcss.config.js",
+    "Write src/main.jsx with ReactDOM.createRoot",
+    "Write src/App.jsx with React Router routes",
+    "Write src/index.css with Tailwind directives",
+    "Write each page component in src/pages/",
+    "Write reusable components in src/components/",
+    "Run: npm install",
+    "Run: npm run build to verify no errors"
+  ],
+  "best_practices": [
+    "Use functional components and hooks only — no class components",
+    "Keep components small and focused (single responsibility)",
+    "Use React Router v6 with <Routes> and <Route>",
+    "Tailwind for all styling — no inline styles except dynamic values",
+    "Use useCallback and useMemo only when profiling shows a need",
+    "Group related state with useReducer for complex forms",
+    "Always handle loading and error states in data-fetching components",
+    "Name files with PascalCase for components, camelCase for utils"
+  ],
+  "templates": {
+    "package.json": "{\"name\":\"{{project_name}}\",\"version\":\"0.1.0\",\"type\":\"module\",\"scripts\":{\"dev\":\"vite\",\"build\":\"vite build\",\"preview\":\"vite preview\"},\"dependencies\":{\"react\":\"^18.3.0\",\"react-dom\":\"^18.3.0\",\"react-router-dom\":\"^6.26.0\"},\"devDependencies\":{\"@vitejs/plugin-react\":\"^4.3.0\",\"autoprefixer\":\"^10.4.19\",\"postcss\":\"^8.4.38\",\"tailwindcss\":\"^3.4.4\",\"vite\":\"^5.3.0\"}}",
+    "vite.config.js": "import { defineConfig } from 'vite'\nimport react from '@vitejs/plugin-react'\nexport default defineConfig({ plugins: [react()] })",
+    "tailwind.config.js": "export default { content: ['./index.html','./src/**/*.{js,jsx,ts,tsx}'], theme: { extend: {} }, plugins: [] }",
+    "src/main.jsx": "import React from 'react'\nimport ReactDOM from 'react-dom/client'\nimport App from './App.jsx'\nimport './index.css'\nReactDOM.createRoot(document.getElementById('root')).render(<React.StrictMode><App /></React.StrictMode>)",
+    "src/index.css": "@tailwind base;\n@tailwind components;\n@tailwind utilities;"
+  },
+  "system_prompt_injection": "You are building a React application. Use Vite + React + Tailwind CSS. Create ALL files listed in the steps. Write complete, working code. After creating all files, run npm install then npm run build to verify. Fix any build errors before finishing."
+}

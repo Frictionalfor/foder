@@ -1,0 +1,29 @@
+{
+  "name": "auth_system",
+  "version": "1.0.0",
+  "description": "Add a complete authentication system to an existing project (register, login, JWT, protected routes).",
+  "tags": ["auth", "jwt", "login", "register", "security", "authentication"],
+  "intent_keywords": ["add auth", "authentication", "login system", "register", "jwt auth", "user auth", "sign in", "sign up"],
+  "steps": [
+    "Detect existing project type (FastAPI / Express / other)",
+    "Add User model with id, email, hashed_password, created_at fields",
+    "Add password hashing utility (bcrypt)",
+    "Add JWT token creation and verification",
+    "Add /auth/register endpoint: validate email+password, hash password, create user, return token",
+    "Add /auth/login endpoint: find user, verify password, return token",
+    "Add /auth/me endpoint: decode token, return current user (protected)",
+    "Add auth middleware/dependency to protect routes",
+    "Write auth tests",
+    "Update README with auth endpoints documentation"
+  ],
+  "best_practices": [
+    "Validate email format and minimum password length (8 chars) on register",
+    "Return 400 if email already exists (not 500)",
+    "Never return the hashed password in any response",
+    "JWT payload: {sub: user_id, exp: timestamp} — keep it minimal",
+    "Access token: 15 minutes. Refresh token: 7 days (store refresh in DB)",
+    "Rate limit auth endpoints in production",
+    "Use constant-time comparison for password verification (bcrypt handles this)"
+  ],
+  "system_prompt_injection": "You are adding authentication to an existing project. First read the existing project structure to understand the codebase. Then implement complete auth: register, login, JWT tokens, and protected route middleware. Write all necessary files and update existing ones. Test that auth endpoints work before finishing."
+}

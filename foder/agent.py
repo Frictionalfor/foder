@@ -1,16 +1,37 @@
 """
-Agent loop - streaming-first with smart history management.
+Agent loop — production-grade, streaming-first with full error recovery.
 
-Design:
+Architecture:
+  User Request
+    -> Context Gathering     (find relevant files, detect project)
+    -> Planning              (optional -- triggered by /plan)
+    -> Tool Selection        (LLM emits tool call JSON)
+    -> Execution             (dispatch to tool registry)
+    -> Verification          (detect failure in tool result)
+    -> Reflection + Retry    (self-correct on failure, up to N retries)
+    -> Final Response        (stream live tokens to caller)
+
+Design decisions:
 - Tool call iterations: collect full response synchronously (reliable JSON parsing)
-- Final answer: stream tokens live to the caller (fast, responsive)
-- History: only last 6 messages sent per request (keeps requests lean)
-- Tool results: truncated to 500 chars in history (prevents bloat)
+- Final answer: stream token-by-token (low latency UX)
+- History: only last N messages sent per request (lean context)
+- Tool results: truncated in history to prevent bloat
+- Error recovery: agent sees failure messages and can retry with different approach
+- Multi-file projects: after each tool execution the loop always continues back
+  to the LLM so it can emit the next tool call without stopping early.
+- JSON leak fix: _strip_tool_json uses a greedy multi-pass loop with no
+  lookahead limit, removing ALL tool call JSON before showing the user.
+
+Loop detection (two layers):
+- Response hash dedup: same raw LLM response twice in a row -> break out.
+- Tool repetition: same (tool, key_param) called N times -> break out.
 """
 
 import json
 import re
-from collections.abc import Iterator, Generator
+import hashlib
+from collections import Counter
+from collections.abc import Generator
 from foder.llm import chat_stream, LLMError
 from foder.prompt import build_messages
 from foder.tools.registry import dispatch
@@ -18,21 +39,88 @@ from foder.config import MAX_ITERATIONS
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-_TOOL_RESULT_MAX_CHARS = 500   # truncate tool results stored in history
-_RECENT_TURNS          = 10    # messages to include per LLM request
-_MAX_HISTORY_MESSAGES  = 40    # hard cap on in-memory history
+_TOOL_RESULT_MAX_CHARS   = 1200   # tool results stored in history (chars)
+_RECENT_TURNS            = 14     # messages to include per LLM request
+_MAX_HISTORY_MESSAGES    = 60     # hard cap on in-memory history
+_MAX_RETRIES_PER_ERROR   = 3      # consecutive errors before forcing bail-out
+_MAX_SAME_TOOL_CALLS     = 4      # same (tool, key_param) calls before loop detection
+_MAX_IDENTICAL_RESPONSES = 2      # identical raw LLM responses before loop detection
 
+# Matches both ```json {...} ``` and ``` {...} ```
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
+# Error patterns that trigger self-correction
+_ERROR_PATTERNS = (
+    "[error]", "[security error]", "syntax error",
+    "traceback", "exception", "errno", "no such file",
+    "command not found", "permission denied", "exit code",
+    "nameerror", "typeerror", "valueerror", "importerror",
+    "modulenotfounderror", "filenotfounderror",
+)
 
-# ── Tool call detection ───────────────────────────────────────────────────────
+# Tool result patterns that indicate success
+_SUCCESS_PATTERNS = (
+    "[ok]", "written", "created", "deleted", "renamed",
+    "edited", "committed", "checkout",
+)
+
+
+# ── Loop detection ─────────────────────────────────────────────────────────────
+
+def _response_fingerprint(raw: str) -> str:
+    return hashlib.sha1(raw.strip().encode("utf-8", errors="replace")).hexdigest()
+
+
+def _tool_key(tool_name: str, parameters: dict) -> str:
+    for key in ("path", "command", "pattern", "operation", "source"):
+        if key in parameters:
+            return f"{tool_name}:{parameters[key]}"
+    return tool_name
+
+
+class _LoopDetector:
+    def __init__(self) -> None:
+        self._response_streak: int = 0
+        self._last_fingerprint: str = ""
+        self._tool_call_counts: Counter = Counter()
+
+    def check_response(self, raw: str) -> str | None:
+        fp = _response_fingerprint(raw)
+        if fp == self._last_fingerprint:
+            self._response_streak += 1
+        else:
+            self._response_streak = 1
+            self._last_fingerprint = fp
+        if self._response_streak >= _MAX_IDENTICAL_RESPONSES:
+            return (
+                "You are repeating the same response. Stop calling tools. "
+                "Give the user a direct final answer right now."
+            )
+        return None
+
+    def record_tool(self, tool_name: str, parameters: dict) -> str | None:
+        key = _tool_key(tool_name, parameters)
+        self._tool_call_counts[key] += 1
+        count = self._tool_call_counts[key]
+        if count >= _MAX_SAME_TOOL_CALLS:
+            return (
+                f"You have called '{tool_name}' with the same parameters "
+                f"{count} times. Stop and give the user a final answer now."
+            )
+        return None
+
+
+# ── Tool call detection ────────────────────────────────────────────────────────
 
 def _extract_tool_call(text: str) -> dict | None:
-    """Parse a tool call JSON from model output. Handles fenced, bare, and indented JSON."""
+    """
+    Parse the FIRST tool call JSON from model output.
+    Handles: fenced blocks, bare JSON, JSON with preamble text.
+    """
     decoder = json.JSONDecoder()
     text    = text.strip()
 
-    # Fenced code block
+    # Fenced code block (highest priority — most unambiguous)
     match = _JSON_FENCE_RE.search(text)
     if match:
         try:
@@ -42,33 +130,56 @@ def _extract_tool_call(text: str) -> dict | None:
         except json.JSONDecodeError:
             pass
 
-    # Bare or preamble JSON - find first { and decode forward
-    start = text.find("{")
-    if start == -1:
-        return None
-    try:
-        data, _ = decoder.raw_decode(text, start)
-        if isinstance(data, dict) and "tool" in data and "parameters" in data:
-            return data
-    except json.JSONDecodeError:
-        pass
+    # Bare or preamble JSON — scan forward from every `{`
+    pos = 0
+    while pos < len(text):
+        start = text.find("{", pos)
+        if start == -1:
+            break
+        try:
+            data, end = decoder.raw_decode(text, start)
+            if isinstance(data, dict) and "tool" in data and "parameters" in data:
+                return data
+            pos = end
+        except json.JSONDecodeError:
+            pos = start + 1
 
     return None
 
 
 def _is_tool_call(text: str) -> bool:
-    """Quick check - does this look like a tool call JSON (not a tool result)?"""
-    # Tool results start with "[tool:" — exclude them
+    """Quick heuristic: does this response contain a tool call?"""
     stripped = text.strip()
     if stripped.startswith("[tool:"):
         return False
     return '"tool"' in stripped and '"parameters"' in stripped
 
 
-# ── History management ────────────────────────────────────────────────────────
+# ── Error / success analysis ───────────────────────────────────────────────────
+
+def _result_is_error(result: str) -> bool:
+    low = result.lower()
+    return any(pat in low for pat in _ERROR_PATTERNS)
+
+
+def _result_is_success(result: str) -> bool:
+    low = result.lower()
+    return any(pat in low for pat in _SUCCESS_PATTERNS)
+
+
+def _build_correction_hint(tool_name: str, parameters: dict, result: str) -> str:
+    return (
+        f"[tool: {tool_name}] FAILED\n"
+        f"parameters: {json.dumps(parameters)}\n"
+        f"error: {result}\n"
+        f"Analyze this error and retry with a corrected approach. "
+        f"Do not repeat the same mistake."
+    )
+
+
+# ── History management ─────────────────────────────────────────────────────────
 
 def _truncate_tool_result(content: str) -> str:
-    """Trim large tool results so they don't bloat future requests."""
     if len(content) <= _TOOL_RESULT_MAX_CHARS:
         return content
     return "...[truncated]\n" + content[-_TOOL_RESULT_MAX_CHARS:]
@@ -81,74 +192,238 @@ def _trim_history(history: list[dict]) -> list[dict]:
 
 
 def _is_tool_result(msg: dict) -> bool:
-    """True if this message is a tool result injected by the agent loop."""
     return msg["role"] == "user" and msg["content"].startswith("[tool:")
 
 
 def _build_messages(history: list[dict]) -> list[dict]:
-    """
-    Build the message list for the LLM.
-    - Takes the last _RECENT_TURNS messages
-    - Strips standalone tool result messages that are older than 2 turns
-      (they bloat context and confuse the model)
-    - Always anchors the original user request of the CURRENT turn
-    """
     if not history:
         return build_messages([])
 
     # Find the start of the current user turn (last non-tool user message)
-    current_turn_start = None
+    current_turn_start: int | None = None
     for i in range(len(history) - 1, -1, -1):
         m = history[i]
         if m["role"] == "user" and not _is_tool_result(m):
             current_turn_start = i
             break
 
-    # Take recent messages
     recent = history[-_RECENT_TURNS:]
 
-    # Ensure the current turn's user message is always included
+    # Always include the current turn anchor
     if current_turn_start is not None:
         anchor = history[current_turn_start]
         if anchor not in recent:
             recent = [anchor] + recent
 
-    # Filter out old tool results that are not part of the current tool chain
-    # Keep tool results only from the last 4 messages (current tool call chain)
-    cutoff = max(0, len(recent) - 4)
+    # Drop old standalone tool results
+    cutoff = max(0, len(recent) - 8)
     filtered = []
     for i, m in enumerate(recent):
         if _is_tool_result(m) and i < cutoff:
-            continue  # drop old tool results
+            continue
         filtered.append(m)
 
     return build_messages(filtered)
 
 
-# ── Agent loop ────────────────────────────────────────────────────────────────
+# ── Code block fallback ────────────────────────────────────────────────────────
+
+def _extract_code_block_as_tool_call(response: str, user_input: str) -> dict | None:
+    """
+    Fallback: model output a fenced code block instead of a tool call.
+    Synthesize a file_write tool call from the code block.
+    Only used when there is NO tool call JSON anywhere in the response.
+    """
+    pattern = re.compile(r"```(\w+)?\s*\n(.*?)```", re.DOTALL)
+    match   = pattern.search(response)
+    if not match:
+        return None
+
+    lang    = (match.group(1) or "").lower().strip()
+    content = match.group(2).strip()
+    if not content or not lang:
+        return None
+
+    # Only trigger for known code languages — not markdown/json/text
+    CODE_LANGS = {
+        "python", "py", "c", "cpp", "c++", "javascript", "js",
+        "typescript", "ts", "java", "go", "rust", "bash", "sh",
+        "html", "css",
+    }
+    if lang not in CODE_LANGS:
+        return None
+
+    filename_match = re.search(r'\b([\w\-]+\.\w+)\b', user_input)
+    if filename_match:
+        filename = filename_match.group(1)
+    else:
+        ext_map = {
+            "python": "main.py", "py": "main.py",
+            "c": "main.c", "cpp": "main.cpp", "c++": "main.cpp",
+            "javascript": "main.js", "js": "main.js",
+            "typescript": "main.ts", "ts": "main.ts",
+            "java": "Main.java", "go": "main.go",
+            "rust": "main.rs", "bash": "script.sh", "sh": "script.sh",
+            "html": "index.html", "css": "style.css",
+        }
+        filename = ext_map.get(lang, f"main.{lang}")
+
+    return {
+        "tool":       "file_write",
+        "parameters": {"path": filename, "content": content},
+    }
+
+
+# ── Strip helpers ──────────────────────────────────────────────────────────────
+
+def _strip_one_tool_call(text: str) -> str:
+    """Remove the FIRST tool call JSON from text, leaving everything after it."""
+    # Try fenced block first
+    m = re.search(r"```(?:json)?\s*\{.*?\}\s*```", text, flags=re.DOTALL)
+    if m:
+        return (text[:m.start()] + text[m.end():]).strip()
+
+    # Bare JSON — find and remove the first complete tool call object
+    decoder = json.JSONDecoder()
+    s   = text.strip()
+    pos = 0
+    while pos < len(s):
+        start = s.find("{", pos)
+        if start == -1:
+            break
+        try:
+            data, end = decoder.raw_decode(s, start)
+            if isinstance(data, dict) and "tool" in data and "parameters" in data:
+                return (s[:start] + s[end:]).strip()
+            pos = end
+        except json.JSONDecodeError:
+            pos = start + 1
+    return text
+
+
+def _strip_tool_json(text: str) -> str:
+    """
+    Remove ALL tool call JSON from a response string.
+
+    Fixes the JSON-leaking-to-user bug:
+    - Handles fenced blocks (``` json {...} ```)
+    - Handles bare JSON objects
+    - Handles multiple tool calls in one response (multi-file projects)
+    - No lookahead size limit — scans the full object regardless of size
+    - Cleans up leftover noise lines from tool results
+    """
+    # Pass 1: remove all fenced JSON blocks
+    text = re.sub(r"```(?:json)?\s*\{.*?\}\s*```", "", text, flags=re.DOTALL)
+
+    # Pass 2: remove all bare JSON tool call objects (unlimited passes)
+    decoder = json.JSONDecoder()
+    max_passes = 20   # safety cap — handles up to 20 tool calls in one response
+    for _ in range(max_passes):
+        s   = text.strip()
+        pos = 0
+        removed = False
+        while pos < len(s):
+            start = s.find("{", pos)
+            if start == -1:
+                break
+            try:
+                data, end = decoder.raw_decode(s, start)
+                if isinstance(data, dict) and "tool" in data and "parameters" in data:
+                    s       = (s[:start] + s[end:]).strip()
+                    text    = s
+                    removed = True
+                    break   # restart from beginning after each removal
+                else:
+                    pos = end
+            except json.JSONDecodeError:
+                pos = start + 1
+        if not removed:
+            break   # no more tool calls found
+
+    # Pass 3: remove leftover noise lines from tool result injection
+    lines = text.splitlines()
+    clean = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("result:"):      continue
+        if stripped.startswith("[ok]"):         continue
+        if stripped.startswith("[error]"):      continue
+        if stripped.startswith("parameters:"):  continue
+        if stripped.startswith("[tool:"):       continue
+        clean.append(line)
+
+    return "\n".join(clean).strip()
+
+
+# ── Generator helpers ──────────────────────────────────────────────────────────
+
+def _stream_tokens(tokens: list[str]) -> Generator[str, None, None]:
+    for t in tokens:
+        yield t
+
+
+def _single(text: str) -> Generator[str, None, None]:
+    yield text
+
+
+# ── Agent callbacks protocol ───────────────────────────────────────────────────
+
+class AgentCallbacks:
+    """Callback interface for the agent loop -- all methods are optional."""
+
+    def on_tool_call(self, tool_name: str, parameters: dict) -> None:
+        """Called just before a tool is executed."""
+
+    def on_tool_result(self, tool_name: str, result: str, is_error: bool) -> None:
+        """Called just after a tool returns."""
+
+    def on_retry(self, attempt: int, reason: str) -> None:
+        """Called when the agent detects an error and is retrying."""
+
+    def on_planning(self, plan: str) -> None:
+        """Called when a plan is produced in /plan mode."""
+
+
+# ── Main agent loop ────────────────────────────────────────────────────────────
 
 def run(
     user_input: str,
     history: list[dict],
-    on_tool_call: callable = None,
+    callbacks: AgentCallbacks | None = None,
+    on_tool_call: object = None,
 ) -> tuple[Generator[str, None, None], list[dict]]:
     """
     Run the agent loop for a single user turn.
 
     Returns (token_generator, updated_history).
 
-    Tool call iterations collect the full response synchronously so JSON
-    parsing is reliable. The final answer streams live token by token.
+    KEY BEHAVIOURS:
+    - Multi-file projects: after every tool call the loop continues back to
+      the LLM so it can emit the next file_write / shell_exec without stopping.
+    - JSON never leaks: _strip_tool_json removes ALL tool call JSON before
+      returning the final answer string to the caller.
+    - Error recovery: tool errors are injected back as user messages so the
+      model can self-correct, up to _MAX_RETRIES_PER_ERROR consecutive failures.
     """
+    if callbacks is None and callable(on_tool_call):
+        cb = AgentCallbacks()
+        cb.on_tool_call = on_tool_call  # type: ignore[method-assign]
+        callbacks = cb
+    if callbacks is None:
+        callbacks = AgentCallbacks()
+
     history.append({"role": "user", "content": user_input})
     history = _trim_history(history)
 
-    for _ in range(MAX_ITERATIONS):
+    consecutive_errors = 0
+    loop_detector      = _LoopDetector()
+
+    for iteration in range(MAX_ITERATIONS):
         messages = _build_messages(history)
 
+        # ── Call LLM (collect full response synchronously) ────────────────────
         try:
-            # Collect full response - needed to reliably detect tool calls
-            tokens = []
+            tokens: list[str] = []
             for token in chat_stream(messages):
                 tokens.append(token)
             raw = "".join(tokens)
@@ -164,25 +439,42 @@ def run(
             history.append({"role": "assistant", "content": "[interrupted]"})
             return _single("cancelled"), history
 
-        # Check if this is a tool call
-        tool_call = _extract_tool_call(raw) if _is_tool_call(raw) else None
+        # ── Loop detection layer 1: repeated response ─────────────────────────
+        loop_msg = loop_detector.check_response(raw)
+        if loop_msg:
+            history.append({"role": "assistant", "content": raw})
+            history.append({"role": "user",      "content": f"[loop detected] {loop_msg}"})
+            callbacks.on_retry(-1, "response repetition detected")
+            try:
+                exit_tokens: list[str] = []
+                for token in chat_stream(_build_messages(history)):
+                    exit_tokens.append(token)
+                final = _strip_tool_json("".join(exit_tokens))
+            except Exception:
+                final = "I got stuck in a loop. Please rephrase your request or try a smaller task."
+            history.append({"role": "assistant", "content": final})
+            return _stream_tokens([final]), history
 
-        if tool_call is None:
-            # Check if model output a fenced code block instead of a tool call
-            # This happens when the model explains instead of acting
-            auto_tc = _extract_code_block_as_tool_call(raw, user_input)
-            if auto_tc:
-                tool_call = auto_tc
+        # ── Detect whether LLM wants to call a tool ───────────────────────────
+        has_tool = _is_tool_call(raw)
+        tool_call = _extract_tool_call(raw) if has_tool else None
 
+        # Fallback: model wrote a code block instead of using file_write
+        if tool_call is None and not has_tool:
+            tool_call = _extract_code_block_as_tool_call(raw, user_input)
+
+        # ── Final answer (no tool call in response) ───────────────────────────
         if tool_call is None:
-            # Final answer - clean up any leaked tool call JSON before displaying
             clean = _strip_tool_json(raw)
             history.append({"role": "assistant", "content": clean})
             return _stream_tokens([clean]), history
 
-        # Execute ALL tool calls found in this response (model sometimes batches them)
+        # ── Execute ALL tool calls present in this response ───────────────────
+        # Multi-file support: the model may emit multiple tool call JSON objects
+        # in a single response. We execute them all before looping back.
         remaining = raw
-        executed  = 0
+        executed_any = False
+
         while True:
             tc = _extract_tool_call(remaining) if _is_tool_call(remaining) else None
             if tc is None:
@@ -191,149 +483,108 @@ def run(
             tool_name  = tc["tool"]
             parameters = tc.get("parameters", {})
 
-            if on_tool_call:
-                on_tool_call(tool_name, parameters)
+            # Loop detection layer 2: same tool + same params N times
+            tool_loop_msg = loop_detector.record_tool(tool_name, parameters)
+            if tool_loop_msg:
+                callbacks.on_retry(-2, tool_loop_msg)
+                history.append({"role": "assistant", "content": remaining})
+                history.append({"role": "user",      "content": f"[loop detected] {tool_loop_msg}"})
+                try:
+                    exit_tokens = []
+                    for token in chat_stream(_build_messages(history)):
+                        exit_tokens.append(token)
+                    final = _strip_tool_json("".join(exit_tokens))
+                except Exception:
+                    final = f"Stopped: repeated tool call detected ({tool_name}). Please rephrase."
+                history.append({"role": "assistant", "content": final})
+                return _stream_tokens([final]), history
 
-            result        = dispatch(tool_name, parameters)
-            stored_result = _truncate_tool_result(result)
+            callbacks.on_tool_call(tool_name, parameters)
+            result   = dispatch(tool_name, parameters)
+            is_error = _result_is_error(result)
+            callbacks.on_tool_result(tool_name, result, is_error)
+            executed_any = True
+
+            if is_error:
+                consecutive_errors += 1
+                if consecutive_errors >= _MAX_RETRIES_PER_ERROR:
+                    callbacks.on_retry(consecutive_errors, result)
+                    error_msg = (
+                        f"[tool: {tool_name}] FAILED after {consecutive_errors} attempts\n"
+                        f"Last error: {result}\n"
+                        "Stop trying this approach and tell the user what went wrong."
+                    )
+                    history.append({"role": "assistant", "content": remaining})
+                    history.append({"role": "user",      "content": error_msg})
+                    # Break inner loop — outer loop continues for self-correction
+                    break
+                else:
+                    callbacks.on_retry(consecutive_errors, result)
+                    stored = _build_correction_hint(tool_name, parameters, result)
+            else:
+                consecutive_errors = 0
+                stored = _truncate_tool_result(result)
 
             tool_turn = (
                 f"[tool: {tool_name}]\n"
                 f"parameters: {json.dumps(parameters)}\n"
-                f"result:\n{stored_result}"
+                f"result:\n{stored}"
             )
 
+            # Store this tool call + result in history, then strip it from remaining
             history.append({"role": "assistant", "content": remaining})
             history.append({"role": "user",      "content": tool_turn})
-            executed += 1
 
-            # Strip the executed tool call from remaining text and check for more
             remaining = _strip_one_tool_call(remaining)
-            if not remaining.strip() or not _is_tool_call(remaining):
-                break
+            # Continue inner loop — there may be more tool calls in `remaining`
 
-        # If there's leftover plain text after all tool calls, that's the final answer
+        if not executed_any:
+            # No tool was executed (e.g. all were loop-detected) — avoid infinite loop
+            clean = _strip_tool_json(raw)
+            history.append({"role": "assistant", "content": clean})
+            return _stream_tokens([clean]), history
+
+        # ── After all tool calls: check for leftover natural language ─────────
+        # IMPORTANT: Only return here if there is actual human-readable text.
+        # If remaining is empty or only tool JSON, loop back to LLM to continue.
         leftover = _strip_tool_json(remaining).strip()
-        if leftover:
+
+        # A leftover is only a real final answer if it contains words, not just
+        # punctuation or whitespace left after stripping JSON.
+        if leftover and len(leftover) > 10 and not _is_tool_call(leftover):
             history.append({"role": "assistant", "content": leftover})
             return _stream_tokens([leftover]), history
 
-        # Otherwise loop back to get the model's final response
+        # No final answer yet — loop back to LLM so it can continue the task.
+        # This is what enables multi-file project generation: the LLM writes
+        # file 1, we execute it, loop back, LLM writes file 2, etc.
 
-    timeout = f"[agent] Reached max iterations ({MAX_ITERATIONS})."
-    history.append({"role": "assistant", "content": timeout})
-    return _single(timeout), history
+    # Reached MAX_ITERATIONS
+    timeout_msg = (
+        f"[agent] Reached max iterations ({MAX_ITERATIONS}). "
+        "The task may be too complex -- try breaking it into smaller steps."
+    )
+    history.append({"role": "assistant", "content": timeout_msg})
+    return _single(timeout_msg), history
 
 
-def _extract_code_block_as_tool_call(response: str, user_input: str) -> dict | None:
+# ── Planning mode ──────────────────────────────────────────────────────────────
+
+def plan(
+    request: str,
+    history: list[dict],
+    callbacks: AgentCallbacks | None = None,
+) -> tuple[Generator[str, None, None], list[dict]]:
     """
-    Fallback: if the model outputs a fenced code block instead of a tool call,
-    extract the code and synthesize a file_write tool call.
-    Infers the filename from the user's request or the code language.
+    Run the agent in planning mode.
+    Produces a structured implementation plan WITHOUT executing any tools.
     """
-    # Find a fenced code block with a language tag
-    pattern = re.compile(r"```(\w+)?\s*\n(.*?)```", re.DOTALL)
-    match   = pattern.search(response)
-    if not match:
-        return None
+    from foder.prompt import build_planning_prompt
+    from foder.context import find_relevant_files
+    import foder.config as config
 
-    lang    = (match.group(1) or "").lower().strip()
-    content = match.group(2).strip()
+    relevant   = find_relevant_files(request, max_files=8)
+    file_names = [str(p.relative_to(config.WORKSPACE)) for p in relevant]
 
-    if not content or not lang:
-        return None
-
-    # Try to extract filename from user input
-    # e.g. "make a C file called swap.c" -> "swap.c"
-    filename_match = re.search(r'\b([\w\-]+\.\w+)\b', user_input)
-    if filename_match:
-        filename = filename_match.group(1)
-    else:
-        # Infer from language
-        ext_map = {
-            'python': 'main.py', 'py': 'main.py',
-            'c': 'main.c', 'cpp': 'main.cpp', 'c++': 'main.cpp',
-            'javascript': 'main.js', 'js': 'main.js',
-            'typescript': 'main.ts', 'ts': 'main.ts',
-            'java': 'Main.java', 'go': 'main.go',
-            'rust': 'main.rs', 'bash': 'script.sh', 'sh': 'script.sh',
-            'html': 'index.html', 'css': 'style.css',
-        }
-        filename = ext_map.get(lang, f'main.{lang}')
-
-    return {
-        "tool": "file_write",
-        "parameters": {"path": filename, "content": content}
-    }
-
-
-def _strip_one_tool_call(text: str) -> str:
-    """Remove only the first tool call JSON from text, leaving the rest."""
-    # Remove first fenced block
-    import re as _re
-    m = _re.search(r"```(?:json)?\s*\{.*?\}\s*```", text, flags=_re.DOTALL)
-    if m:
-        return (text[:m.start()] + text[m.end():]).strip()
-    # Remove first bare JSON tool call
-    decoder = json.JSONDecoder()
-    s = text.strip()
-    start = s.find("{")
-    if start == -1:
-        return text
-    try:
-        _, end = decoder.raw_decode(s, start)
-        return (s[:start] + s[end:]).strip()
-    except json.JSONDecodeError:
-        return text
-
-
-def _strip_tool_json(text: str) -> str:
-    """
-    Remove ALL tool call JSON and tool result noise from a response.
-    Leaves only the human-readable final message.
-    """
-    import re as _re
-
-    # Remove fenced JSON blocks
-    text = _re.sub(r"```(?:json)?\s*\{.*?\}\s*```", "", text, flags=_re.DOTALL)
-
-    # Remove bare JSON tool calls (loop until none left)
-    decoder = json.JSONDecoder()
-    for _ in range(20):
-        s = text.strip()
-        idx = s.find("{")
-        if idx == -1:
-            break
-        # Only strip if it looks like a tool call
-        snippet = s[idx:idx+300]
-        if '"tool"' not in snippet or '"parameters"' not in snippet:
-            break
-        try:
-            _, end = decoder.raw_decode(s, idx)
-            text = (s[:idx] + s[end:]).strip()
-        except json.JSONDecodeError:
-            break
-
-    # Remove leftover tool result lines: "result:", "[ok] ...", "parameters: ..."
-    lines = text.splitlines()
-    clean = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("result:"):       continue
-        if stripped.startswith("[ok]"):          continue
-        if stripped.startswith("[error]"):       continue
-        if stripped.startswith("parameters:"):  continue
-        if stripped.startswith("[tool:"):        continue
-        clean.append(line)
-
-    return "\n".join(clean).strip()
-
-
-def _stream_tokens(tokens: list[str]) -> Generator[str, None, None]:
-    """Yield pre-collected tokens one by one."""
-    for t in tokens:
-        yield t
-
-
-def _single(text: str) -> Generator[str, None, None]:
-    yield text
+    planning_input = build_planning_prompt(request, file_names)
+    return run(planning_input, history, callbacks=callbacks)

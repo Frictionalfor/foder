@@ -1,0 +1,30 @@
+{
+  "name": "fullstack_app",
+  "version": "1.0.0",
+  "description": "Build a full-stack application: React frontend + FastAPI or Express backend, with auth and database.",
+  "tags": ["fullstack", "react", "fastapi", "express", "frontend", "backend", "database"],
+  "intent_keywords": ["full stack", "fullstack", "full-stack", "frontend and backend", "complete app", "saas", "web app"],
+  "steps": [
+    "Ask: What is the app's core purpose? (if not already specified)",
+    "Create monorepo structure: frontend/, backend/, README.md",
+    "Build backend first (use fastapi_backend or node_api skill steps)",
+    "Build frontend second (use react_app skill steps)",
+    "Configure frontend API client to call backend base URL",
+    "Add CORS to backend allowing frontend origin",
+    "Wire up auth: frontend login/register forms → backend JWT endpoints",
+    "Add protected routes in frontend using auth context",
+    "Run backend and verify API endpoints",
+    "Run frontend build and verify no errors",
+    "Write root README.md with setup instructions for both"
+  ],
+  "best_practices": [
+    "Frontend and backend are completely independent — communicate only via HTTP",
+    "Store JWT in localStorage or httpOnly cookie (document the tradeoff)",
+    "Use an API client module (src/api.js) — never call fetch() directly in components",
+    "Environment variables for API base URL in frontend (.env)",
+    "Run backend on :8000, frontend dev on :5173",
+    "Add loading states for all async operations",
+    "Handle token expiry: redirect to login on 401"
+  ],
+  "system_prompt_injection": "You are building a full-stack application. Build the backend first, then the frontend. Create ALL files. Ensure the frontend can communicate with the backend. After all files are created, run both servers to verify they start without errors. Fix any issues before finishing."
+}
