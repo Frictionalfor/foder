@@ -177,24 +177,22 @@ def apply_skill_auto(user_input: str) -> tuple[str, dict | None]:
 _BUILD_PROJECT_PROMPT = """\
 [PROJECT GENERATION MODE]
 
-You are a senior full-stack engineer. Build a complete, runnable project from scratch.
+You are a full-stack engineering agent. Your ONLY job is to materialize the requested project by emitting tool calls.
 
-WORKFLOW (execute every step in order):
-1. ANALYZE: Understand what needs to be built from the request.
-2. ARCHITECT: Design the folder structure and list every file to be created.
-3. GENERATE: Create every file with complete, working code — no placeholders, no TODOs.
-4. INSTALL: Run the appropriate package manager (npm install / pip install).
-5. VERIFY: Run the project (npm run build / python -m pytest / go build / etc).
-6. FIX: If verification fails, read the error, fix the file, and re-verify.
-7. REPORT: State what was built and how to run it.
-
-RULES:
-- Create ALL files. Do not skip any.
-- Write COMPLETE code — every function must be implemented.
-- Never output placeholder code like "// TODO" or "pass".
+HARD RULES:
+- Do NOT explain, summarize, apologize, or tutor. No sentences at all.
+- Do NOT say "I cannot build websites" — you can, via tools.
+- Every action is a tool call: file_write, dir_create, shell_exec.
 - If a file is long, write it in full anyway.
-- After all files are created, always run a build/test command to verify.
-- If it fails, fix it. Never leave the project in a broken state.
+- If verification fails, fix the file and re-verify.
+- If you have nothing left to do, output nothing more.
+
+WORKFLOW (execute via tool calls):
+1. Create directory structure with dir_create.
+2. Write every file with file_write — complete code, no placeholders, no TODOs.
+3. Run npm install / pip install / go mod tidy / etc with shell_exec.
+4. Run the project build/test with shell_exec.
+5. If it fails, read the error, repair files with file_edit, re-run verification.
 
 USER REQUEST: {request}
 """
@@ -206,16 +204,44 @@ def build_project_prompt(request: str) -> str:
     Also auto-detects and injects a matching skill if available.
     """
     skill = detect_skill(request)
-    prompt = _BUILD_PROJECT_PROMPT.format(request=request)
+
+    parts: list[str] = [
+        "[PROJECT GENERATION MODE]",
+        "",
+        "You are an engineering agent. Build the requested project by emitting tool calls ONLY.",
+        "",
+        "HARD RULES:",
+        "- Do NOT explain, summarize, apologize, or tutor. No sentences at all.",
+        "- Do NOT say 'I cannot build websites'. You build via tools.",
+        "- Every action is a tool call: file_write, dir_create, shell_exec.",
+        "- Write COMPLETE files. No placeholders, no '// TODO', no 'pass'.",
+        "- After writing files, run npm install and npm run build.",
+        "- Fix any errors. Re-verify.",
+        "",
+        f"USER REQUEST: {request}",
+    ]
 
     if skill:
         steps_text = "\n".join(f"  {i+1}. {s}" for i, s in enumerate(skill.get("steps", [])))
         practices_text = "\n".join(f"  • {p}" for p in skill.get("best_practices", []))
-        skill_block = (
-            f"\n[SKILL LOADED: {skill['name']}]\n"
-            f"Follow these specific steps for this project type:\n{steps_text}\n"
-            f"\nApply these best practices:\n{practices_text}"
-        )
-        prompt += skill_block
+        parts.append("")
+        parts.append(f"[SKILL LOADED: {skill['name']}]")
+        parts.append(f"{skill.get('description','')}")
+        parts.append("")
+        parts.append("FOLLOW THESE STEPS IN ORDER (each is a tool call):")
+        parts.append(steps_text)
+        parts.append("")
+        if practices_text:
+            parts.append("BEST PRACTICES:")
+            parts.append(practices_text)
+            parts.append("")
 
-    return prompt
+        templates = skill.get("templates", {})
+        if templates:
+            parts.append("USE THESE TEMPLATES VERBATIM WHERE APPLICABLE:")
+            for path, content in templates.items():
+                parts.append("")
+                parts.append(f"TEMPLATE: {path}")
+                parts.append(content)
+
+    return "\n".join(parts)

@@ -35,9 +35,11 @@ def _detect_default_model() -> str:
             return OLLAMA_MODEL
         if OLLAMA_MODEL in models:
             return OLLAMA_MODEL      # configured model is available — use it
-        # Prefer coding models in order, then fall back to whatever is installed
         _PREFERRED = [
-            "qwen2.5-coder", "deepseek-coder", "codellama",
+            "qwen2.5-coder:32b", "qwen2.5-coder:14b", "qwen2.5-coder:7b",
+            "qwen2.5-coder",
+            "deepseek-coder:33b", "deepseek-coder:6.7b", "deepseek-coder",
+            "codellama:34b", "codellama:13b", "codellama:7b", "codellama",
             "qwen3", "qwen2.5", "llama3", "mistral", "phi3",
         ]
         for pref in _PREFERRED:

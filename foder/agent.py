@@ -112,23 +112,22 @@ class _LoopDetector:
 
 # ── Tool call detection ────────────────────────────────────────────────────────
 
-def _extract_tool_call(text: str) -> dict | None:
+def _find_first_tool_call(text: str) -> tuple[int, int] | None:
     """
-    Parse the FIRST tool call JSON from model output.
-    Handles: fenced blocks, bare JSON, JSON with preamble text.
+    Brace-count scanner that locates the first tool call JSON object in text.
+    Returns (start, end) indices, or None if not found.
+    Tolerates raw control characters inside strings by relying on bracket
+    depth rather than strict JSON parsing.
     """
-    decoder = json.JSONDecoder()
-    text    = text.strip()
+    text = text.strip()
 
     # Fenced code block (highest priority — most unambiguous)
     match = _JSON_FENCE_RE.search(text)
     if match:
-        try:
-            data = json.loads(match.group(1))
-            if "tool" in data and "parameters" in data:
-                return data
-        except json.JSONDecodeError:
-            pass
+        start = match.start(1)
+        end   = match.end(1)
+        if start >= 0 and end > start:
+            return (start, end)
 
     # Bare or preamble JSON — scan forward from every `{`
     pos = 0
@@ -136,15 +135,71 @@ def _extract_tool_call(text: str) -> dict | None:
         start = text.find("{", pos)
         if start == -1:
             break
-        try:
-            data, end = decoder.raw_decode(text, start)
-            if isinstance(data, dict) and "tool" in data and "parameters" in data:
-                return data
-            pos = end
-        except json.JSONDecodeError:
-            pos = start + 1
+        brace_depth = 0
+        in_string = False
+        escape = False
+        end = -1
+        for i in range(start, len(text)):
+            ch = text[i]
+            if escape:
+                escape = False
+                continue
+            if ch == "\\" and in_string:
+                escape = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if not in_string:
+                if ch == "{":
+                    brace_depth += 1
+                elif ch == "}":
+                    brace_depth -= 1
+                    if brace_depth <= 0:
+                        end = i + 1
+                        break
+        if end > start:
+            return (start, end)
+        pos = start + 1
 
     return None
+
+
+def _try_load_candidate(candidate: str) -> dict | None:
+    candidate = candidate.strip()
+    if not candidate:
+        return None
+    try:
+        data = json.loads(candidate)
+        if isinstance(data, dict) and "tool" in data and "parameters" in data:
+            return data
+    except json.JSONDecodeError:
+        pass
+    fixed = candidate.replace("\n", "\\n").replace("\r", "\\r")
+    if fixed != candidate:
+        try:
+            data = json.loads(fixed)
+            if isinstance(data, dict) and "tool" in data and "parameters" in data:
+                return data
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def _extract_tool_call(text: str) -> dict | None:
+    """
+    Parse the FIRST tool call JSON from model output.
+    Handles: fenced blocks, bare JSON, JSON with preamble text.
+    Also tolerates invalid escaping by attempting common fixes.
+    """
+    text = text.strip()
+
+    bounds = _find_first_tool_call(text)
+    if bounds is None:
+        return None
+    start, end = bounds
+    candidate = text[start:end]
+    return _try_load_candidate(candidate)
 
 
 def _is_tool_call(text: str) -> bool:
@@ -278,27 +333,11 @@ def _extract_code_block_as_tool_call(response: str, user_input: str) -> dict | N
 
 def _strip_one_tool_call(text: str) -> str:
     """Remove the FIRST tool call JSON from text, leaving everything after it."""
-    # Try fenced block first
-    m = re.search(r"```(?:json)?\s*\{.*?\}\s*```", text, flags=re.DOTALL)
-    if m:
-        return (text[:m.start()] + text[m.end():]).strip()
-
-    # Bare JSON — find and remove the first complete tool call object
-    decoder = json.JSONDecoder()
-    s   = text.strip()
-    pos = 0
-    while pos < len(s):
-        start = s.find("{", pos)
-        if start == -1:
-            break
-        try:
-            data, end = decoder.raw_decode(s, start)
-            if isinstance(data, dict) and "tool" in data and "parameters" in data:
-                return (s[:start] + s[end:]).strip()
-            pos = end
-        except json.JSONDecodeError:
-            pos = start + 1
-    return text
+    bounds = _find_first_tool_call(text)
+    if bounds is None:
+        return text
+    start, end = bounds
+    return (text[:start] + text[end:]).strip()
 
 
 def _strip_tool_json(text: str) -> str:
@@ -316,29 +355,15 @@ def _strip_tool_json(text: str) -> str:
     text = re.sub(r"```(?:json)?\s*\{.*?\}\s*```", "", text, flags=re.DOTALL)
 
     # Pass 2: remove all bare JSON tool call objects (unlimited passes)
-    decoder = json.JSONDecoder()
     max_passes = 20   # safety cap — handles up to 20 tool calls in one response
     for _ in range(max_passes):
-        s   = text.strip()
-        pos = 0
-        removed = False
-        while pos < len(s):
-            start = s.find("{", pos)
-            if start == -1:
-                break
-            try:
-                data, end = decoder.raw_decode(s, start)
-                if isinstance(data, dict) and "tool" in data and "parameters" in data:
-                    s       = (s[:start] + s[end:]).strip()
-                    text    = s
-                    removed = True
-                    break   # restart from beginning after each removal
-                else:
-                    pos = end
-            except json.JSONDecodeError:
-                pos = start + 1
-        if not removed:
+        s = text.strip()
+        bounds = _find_first_tool_call(s)
+        if bounds is None:
             break   # no more tool calls found
+        start, end = bounds
+        s = (s[:start] + s[end:]).strip()
+        text = s
 
     # Pass 3: remove leftover noise lines from tool result injection
     lines = text.splitlines()

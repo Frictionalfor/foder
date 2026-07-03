@@ -1412,7 +1412,7 @@ def _handle_build(description: str, history: list) -> None:
     console.print(Panel(
         f"  [{_A2}]PROJECT GENERATION MODE[/{_A2}]\n\n"
         f"  [{_DIM}]Building:[/{_DIM}] {description}\n"
-        f"  [{_DIM}]Skill:   [/{_DIM}] {skill_name}\n\n"
+        f"  [{_DIM}]Skill:   [/{_A2}] {skill_name}\n\n"
         f"  [{_DIM}]Foder will architect, generate, and verify a complete project.[/{_DIM}]\n"
         f"  [{_DIM}]This may take several iterations. Press Ctrl+C to interrupt.[/{_DIM}]",
         border_style=_A4, padding=(0,1)
@@ -1424,25 +1424,43 @@ def _handle_build(description: str, history: list) -> None:
 
     console.print()
 
-    # Take a snapshot before so we can show what was created
     snap_before = _take_snapshot()
-
     build_input = build_project_prompt(description)
-    full = _run_agent_turn(build_input, history)
 
-    # Show what was created
-    snap_after = _take_snapshot()
-    added = [k for k in snap_after if k not in snap_before]
-    if added:
-        console.print()
-        out = Text()
-        out.append(f"  [{_A2}]✓ Project generated — {len(added)} file(s) created[/{_A2}]\n\n")
-        for f in sorted(added)[:20]:
-            out.append(f"    + {f}\n", style=_OK)
-        if len(added) > 20:
-            out.append(f"    ... and {len(added)-20} more\n", style=_DIM)
-        console.print(Panel(out, border_style=_A4, padding=(0,1),
-                            title=f"[{_DIM}]generated[/{_DIM}]"))
+    for attempt in range(1, 4):
+        if attempt > 1:
+            history.append({"role": "user", "content": (
+                "[BUILD CORRECTION] The previous turn produced no files. "
+                "Stop producing prose. Emit ONLY tool calls: file_write, dir_create, shell_exec. "
+                "Create the remaining files now."
+            )})
+        full = _run_agent_turn(build_input if attempt == 1 else "Continue building.", history)
+
+        snap_after = _take_snapshot()
+        added = [k for k in snap_after if k not in snap_before]
+        if added:
+            console.print()
+            out = Text()
+            out.append(f"  [{_A2}]✓ Project generated — {len(added)} file(s) created[/{_A2}]\n\n")
+            for f in sorted(added)[:20]:
+                out.append(f"    + {f}\n", style=_OK)
+            if len(added) > 20:
+                out.append(f"    ... and {len(added)-20} more\n", style=_DIM)
+            console.print(Panel(out, border_style=_A4, padding=(0,1),
+                                title=f"[{_DIM}]generated[/{_DIM}]"))
+            console.print()
+            console.print(Rule(style=_A5))
+            return
+
+        if attempt < 3:
+            console.print(f"  [yellow]No files created yet — retrying ({attempt}/3)...[/yellow]")
+
+    console.print(Panel(
+        f"  [{_ERR}]Build failed: no files were created after 3 attempts.[/{_ERR}]\n\n"
+        f"  [{_DIM}]This usually means the model is producing prose instead of tool calls.[/{_DIM}]\n"
+        f"  [{_DIM}]Try switching to a stronger model: /switch qwen2.5-coder:7b[/{_DIM}]",
+        border_style=_ERR, padding=(0,1)
+    ))
     console.print()
     console.print(Rule(style=_A5))
 
