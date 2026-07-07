@@ -43,6 +43,8 @@ CORE RULES:
 DIFF-BASED EDITING:
 - Prefer file_edit over file_write when changing part of an existing file
 - file_edit replaces old_str with new_str — old_str must match exactly once
+- If indentation differs slightly, file_edit will still find the match via whitespace normalization
+- For large files, use file_read with start_line/end_line to read only the relevant section before editing
 
 TOOL FORMAT (JSON only, no markdown wrapper needed):
 {{"tool": "<name>", "parameters": {{...}}}}

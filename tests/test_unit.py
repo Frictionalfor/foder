@@ -1,34 +1,31 @@
 """
-Foder test suite — covers imports, config, security, tools, agent, session, prompt.
-Run with: python3 test_foder.py
+Foder unit test suite — pytest compatible.
+Covers imports, config, security, tools, agent, session, prompt, @file, snapshot, themes.
+
+Run with:  pytest tests/test_unit.py -v
 """
+import os
 import sys
 import tempfile
 import json
 from pathlib import Path
 
-results = []
+import pytest
 
-def test(name, fn):
-    try:
-        fn()
-        results.append(("PASS", name))
-    except Exception as e:
-        results.append(("FAIL", f"{name}  ->  {e}"))
+# Prevent config from making an HTTP call to Ollama at import time
+os.environ.setdefault("OLLAMA_MODEL", "qwen2.5-coder:3b")
 
 
 # ── Imports ───────────────────────────────────────────────────────────────────
 
-def t_imports():
+def test_imports_all_modules_load():
     from foder import main, agent, llm, prompt, config, security
     from foder.tools import registry, file_read, file_write, dir_list, shell_exec
-
-test("imports: all modules load", t_imports)
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-def t_config_defaults():
+def test_config_defaults_are_valid():
     import foder.config as c
     assert c.WORKSPACE.exists()
     assert c.OLLAMA_BASE_URL.startswith("http")
@@ -36,17 +33,12 @@ def t_config_defaults():
     assert c.SHELL_TIMEOUT > 0
     assert c.MAX_ITERATIONS > 0
 
-test("config: defaults are valid", t_config_defaults)
 
-
-def t_config_foder_json():
-    import os
+def test_config_foder_json_overrides_defaults():
     import foder.config as c
     orig_model   = c.OLLAMA_MODEL
     orig_timeout = c.LLM_TIMEOUT
     orig_ws      = c.WORKSPACE
-    # Temporarily unset OLLAMA_MODEL so load_project_config() reads from foder.json
-    # (env vars take precedence by design — the test must not have it set)
     had_env = "OLLAMA_MODEL" in os.environ
     os.environ.pop("OLLAMA_MODEL", None)
     try:
@@ -64,69 +56,50 @@ def t_config_foder_json():
         if had_env:
             os.environ["OLLAMA_MODEL"] = orig_model
 
-test("config: foder.json overrides defaults", t_config_foder_json)
 
-
-def t_config_malformed_json():
+def test_config_malformed_foder_json_silently_ignored():
     import foder.config as c
     orig_ws = c.WORKSPACE
     with tempfile.TemporaryDirectory() as d:
         (Path(d) / "foder.json").write_text("{bad json{{")
         c.WORKSPACE = Path(d)
-        c.load_project_config()   # should not raise
+        c.load_project_config()   # must not raise
     c.WORKSPACE = orig_ws
-
-test("config: malformed foder.json is silently ignored", t_config_malformed_json)
 
 
 # ── Security ──────────────────────────────────────────────────────────────────
 
-def t_security_path_escape():
+def test_security_path_escape_blocked():
     from foder.security import validate_path, SecurityError
-    try:
+    with pytest.raises(SecurityError):
         validate_path("../../etc/passwd")
-        raise AssertionError("should have raised SecurityError")
-    except SecurityError:
-        pass
-
-test("security: path escape blocked", t_security_path_escape)
 
 
-def t_security_valid_path():
+def test_security_valid_relative_path_allowed():
     from foder.security import validate_path
     p = validate_path("somefile.txt")
     assert p is not None
 
-test("security: valid relative path allowed", t_security_valid_path)
 
-
-def t_security_blocked_commands():
+def test_security_dangerous_commands_blocked():
     from foder.security import validate_command, SecurityError
-    blocked = ["rm -rf /", "sudo rm -rf /home", "shutdown", "mkfs"]
-    for cmd in blocked:
-        try:
+    for cmd in ["rm -rf /", "sudo rm -rf /home", "shutdown", "mkfs"]:
+        with pytest.raises(SecurityError):
             validate_command(cmd)
-            raise AssertionError(f"should have blocked: {cmd}")
-        except SecurityError:
-            pass
-
-test("security: dangerous commands blocked", t_security_blocked_commands)
 
 
-def t_security_safe_commands():
+def test_security_safe_commands_allowed():
     from foder.security import validate_command
     for cmd in ["ls -la", "python3 main.py", "git status", "echo hello"]:
-        validate_command(cmd)
-
-test("security: safe commands allowed", t_security_safe_commands)
+        validate_command(cmd)  # must not raise
 
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
-def t_tool_write_read():
+def test_tool_file_write_read_roundtrip():
     import foder.config as c
     from foder.tools.file_write import execute as fw
-    from foder.tools.file_read import execute as fr
+    from foder.tools.file_read  import execute as fr
     with tempfile.TemporaryDirectory() as d:
         c.WORKSPACE = Path(d)
         r = fw("test.txt", "hello foder")
@@ -134,10 +107,8 @@ def t_tool_write_read():
         content = fr("test.txt")
         assert content == "hello foder", f"read mismatch: {repr(content)}"
 
-test("tools: file_write + file_read roundtrip", t_tool_write_read)
 
-
-def t_tool_write_creates_dirs():
+def test_tool_file_write_creates_parent_directories():
     import foder.config as c
     from foder.tools.file_write import execute as fw
     with tempfile.TemporaryDirectory() as d:
@@ -146,10 +117,8 @@ def t_tool_write_creates_dirs():
         assert "[ok]" in r
         assert (Path(d) / "subdir" / "nested" / "file.txt").exists()
 
-test("tools: file_write creates parent directories", t_tool_write_creates_dirs)
 
-
-def t_tool_read_missing():
+def test_tool_file_read_missing_file_returns_error():
     import foder.config as c
     from foder.tools.file_read import execute as fr
     with tempfile.TemporaryDirectory() as d:
@@ -157,12 +126,40 @@ def t_tool_read_missing():
         r = fr("nonexistent.txt")
         assert "[error]" in r
 
-test("tools: file_read missing file returns error", t_tool_read_missing)
 
-
-def t_tool_dir_list():
+def test_tool_file_read_line_range():
+    """New feature: start_line / end_line parameters."""
     import foder.config as c
-    from foder.tools.dir_list import execute as dl
+    from foder.tools.file_write import execute as fw
+    from foder.tools.file_read  import execute as fr
+    with tempfile.TemporaryDirectory() as d:
+        c.WORKSPACE = Path(d)
+        fw("lines.txt", "line1\nline2\nline3\nline4\nline5")
+        result = fr("lines.txt", start_line=2, end_line=4)
+        assert "line2" in result
+        assert "line4" in result
+        assert "line1" not in result
+        assert "line5" not in result
+        assert "[lines 2-4 of 5]" in result
+
+
+def test_tool_file_read_negative_line_range():
+    """Negative indices: -1 means last line."""
+    import foder.config as c
+    from foder.tools.file_write import execute as fw
+    from foder.tools.file_read  import execute as fr
+    with tempfile.TemporaryDirectory() as d:
+        c.WORKSPACE = Path(d)
+        fw("neg.txt", "a\nb\nc\nd\ne")
+        result = fr("neg.txt", start_line=-2, end_line=-1)
+        assert "d" in result
+        assert "e" in result
+        assert "a" not in result
+
+
+def test_tool_dir_list_shows_files():
+    import foder.config as c
+    from foder.tools.dir_list   import execute as dl
     from foder.tools.file_write import execute as fw
     with tempfile.TemporaryDirectory() as d:
         c.WORKSPACE = Path(d)
@@ -170,10 +167,8 @@ def t_tool_dir_list():
         r = dl(".")
         assert "a.txt" in r and "b.txt" in r
 
-test("tools: dir_list shows files", t_tool_dir_list)
 
-
-def t_tool_dir_list_missing():
+def test_tool_dir_list_missing_dir_returns_error():
     import foder.config as c
     from foder.tools.dir_list import execute as dl
     with tempfile.TemporaryDirectory() as d:
@@ -181,10 +176,8 @@ def t_tool_dir_list_missing():
         r = dl("nonexistent_dir")
         assert "[error]" in r
 
-test("tools: dir_list missing dir returns error", t_tool_dir_list_missing)
 
-
-def t_tool_dir_create():
+def test_tool_dir_create_creates_directory():
     import foder.config as c
     from foder.tools.dir_create import execute as dc
     with tempfile.TemporaryDirectory() as d:
@@ -192,14 +185,95 @@ def t_tool_dir_create():
         r = dc("my-folder")
         assert "[ok]" in r
         assert (Path(d) / "my-folder").is_dir()
-        # Second call should say already exists
         r2 = dc("my-folder")
         assert "already exists" in r2
 
-test("tools: dir_create creates directory", t_tool_dir_create)
+
+def test_tool_dir_remove_empty_dir():
+    """dir_remove on an empty dir must work without recursive flag."""
+    import foder.config as c
+    from foder.tools.dir_create import execute as dc
+    from foder.tools.dir_remove import execute as dr
+    with tempfile.TemporaryDirectory() as d:
+        c.WORKSPACE = Path(d)
+        dc("empty-dir")
+        r = dr("empty-dir")
+        assert "[ok]" in r
+        assert not (Path(d) / "empty-dir").exists()
 
 
-def t_tool_shell_exec():
+def test_tool_dir_remove_non_empty_requires_recursive():
+    """dir_remove on non-empty dir without recursive=True must return an error."""
+    import foder.config as c
+    from foder.tools.file_write import execute as fw
+    from foder.tools.dir_remove import execute as dr
+    with tempfile.TemporaryDirectory() as d:
+        c.WORKSPACE = Path(d)
+        fw("nonempty/file.txt", "content")
+        r = dr("nonempty")
+        assert "[error]" in r
+        assert "recursive" in r.lower()
+
+
+def test_tool_dir_remove_recursive_flag():
+    """dir_remove with recursive=True must remove a non-empty directory."""
+    import foder.config as c
+    from foder.tools.file_write import execute as fw
+    from foder.tools.dir_remove import execute as dr
+    with tempfile.TemporaryDirectory() as d:
+        c.WORKSPACE = Path(d)
+        fw("todelete/file1.txt", "a")
+        fw("todelete/sub/file2.txt", "b")
+        r = dr("todelete", recursive=True)
+        assert "[ok]" in r
+        assert not (Path(d) / "todelete").exists()
+
+
+def test_tool_file_edit_exact_match():
+    """file_edit exact-match path."""
+    import foder.config as c
+    from foder.tools.file_write import execute as fw
+    from foder.tools.file_edit  import execute as fe
+    with tempfile.TemporaryDirectory() as d:
+        c.WORKSPACE = Path(d)
+        fw("edit_me.py", "def greet():\n    return 'hello'\n")
+        r = fe("edit_me.py", old_str="return 'hello'", new_str="return 'hi'")
+        assert "[ok]" in r
+        content = (Path(d) / "edit_me.py").read_text()
+        assert "return 'hi'" in content
+
+
+def test_tool_file_edit_normalized_whitespace_fallback():
+    """file_edit normalized-whitespace fallback: model sends wrong indent."""
+    import foder.config as c
+    from foder.tools.file_write import execute as fw
+    from foder.tools.file_edit  import execute as fe
+    with tempfile.TemporaryDirectory() as d:
+        c.WORKSPACE = Path(d)
+        # File uses 4-space indent
+        fw("app.py", "def run():\n    print('start')\n    print('end')\n")
+        # Model sends 2-space indent in old_str — should still match via normalization
+        r = fe("app.py",
+               old_str="  print('start')",
+               new_str="    print('STARTED')")
+        assert "[ok]" in r, f"Expected [ok], got: {r}"
+        content = (Path(d) / "app.py").read_text()
+        assert "STARTED" in content
+
+
+def test_tool_file_edit_not_found_gives_context_hint():
+    """file_edit error message includes a nearby-lines hint when possible."""
+    import foder.config as c
+    from foder.tools.file_write import execute as fw
+    from foder.tools.file_edit  import execute as fe
+    with tempfile.TemporaryDirectory() as d:
+        c.WORKSPACE = Path(d)
+        fw("hint.py", "x = 1\ny = 2\nz = 3\n")
+        r = fe("hint.py", old_str="definitely_not_in_file()", new_str="x")
+        assert "[error]" in r
+
+
+def test_tool_shell_exec_runs_command():
     import foder.config as c
     from foder.tools.shell_exec import execute as se
     with tempfile.TemporaryDirectory() as d:
@@ -207,10 +281,8 @@ def t_tool_shell_exec():
         r = se("echo hello_foder_test")
         assert "hello_foder_test" in r, f"got: {r}"
 
-test("tools: shell_exec runs command", t_tool_shell_exec)
 
-
-def t_tool_shell_exec_blocked():
+def test_tool_shell_exec_blocks_dangerous_command():
     import foder.config as c
     from foder.tools.shell_exec import execute as se
     with tempfile.TemporaryDirectory() as d:
@@ -218,10 +290,8 @@ def t_tool_shell_exec_blocked():
         r = se("rm -rf /")
         assert "security error" in r.lower() or "blocked" in r.lower(), f"got: {r}"
 
-test("tools: shell_exec blocks dangerous command", t_tool_shell_exec_blocked)
 
-
-def t_tool_shell_exec_exit_code():
+def test_tool_shell_exec_captures_non_zero_exit_code():
     import foder.config as c
     from foder.tools.shell_exec import execute as se
     with tempfile.TemporaryDirectory() as d:
@@ -229,26 +299,20 @@ def t_tool_shell_exec_exit_code():
         r = se("python3 -c 'import sys; sys.exit(2)'")
         assert "exit code" in r and "2" in r, f"got: {r}"
 
-test("tools: shell_exec captures non-zero exit code", t_tool_shell_exec_exit_code)
 
-
-def t_tool_registry_unknown():
+def test_tool_registry_returns_error_for_unknown_tool():
     from foder.tools.registry import dispatch
     r = dispatch("nonexistent_tool", {})
     assert "unknown" in r.lower()
 
-test("tools: registry returns error for unknown tool", t_tool_registry_unknown)
 
-
-def t_tool_registry_missing_param():
+def test_tool_registry_catches_missing_required_param():
     from foder.tools.registry import dispatch
-    r = dispatch("file_write", {"path": "x.txt"})
+    r = dispatch("file_write", {"path": "x.txt"})   # missing 'content'
     assert "missing" in r.lower() or "error" in r.lower()
 
-test("tools: registry catches missing required param", t_tool_registry_missing_param)
 
-
-def t_tool_path_escape_via_tool():
+def test_tool_file_read_blocks_path_escape():
     import foder.config as c
     from foder.tools.file_read import execute as fr
     with tempfile.TemporaryDirectory() as d:
@@ -256,38 +320,30 @@ def t_tool_path_escape_via_tool():
         r = fr("../../etc/passwd")
         assert "security error" in r.lower() or "denied" in r.lower(), f"got: {r}"
 
-test("tools: file_read blocks path escape", t_tool_path_escape_via_tool)
-
 
 # ── Agent tool call detection ─────────────────────────────────────────────────
 
-def t_agent_bare_json():
+def test_agent_detects_bare_json_tool_call():
     from foder.agent import _extract_tool_call
     r = _extract_tool_call('{"tool": "dir_list", "parameters": {"path": "."}}')
     assert r is not None and r["tool"] == "dir_list"
 
-test("agent: detects bare JSON tool call", t_agent_bare_json)
 
-
-def t_agent_fenced_json():
+def test_agent_detects_fenced_json_tool_call():
     from foder.agent import _extract_tool_call
     r = _extract_tool_call('```json\n{"tool": "file_read", "parameters": {"path": "x"}}\n```')
     assert r is not None and r["tool"] == "file_read"
 
-test("agent: detects fenced JSON tool call", t_agent_fenced_json)
 
-
-def t_agent_large_payload():
+def test_agent_detects_large_file_write_payload():
     from foder.agent import _extract_tool_call
-    big = "x" * 8000
+    big     = "x" * 8000
     payload = json.dumps({"tool": "file_write", "parameters": {"path": "f.py", "content": big}})
     r = _extract_tool_call(payload)
     assert r is not None and r["tool"] == "file_write"
 
-test("agent: detects large file_write payload (>512 chars)", t_agent_large_payload)
 
-
-def t_agent_nested_braces():
+def test_agent_handles_nested_braces_in_file_content():
     from foder.agent import _extract_tool_call
     content = 'def f():\n    d = {"key": "val"}\n    return d\n'
     payload = json.dumps({"tool": "file_write", "parameters": {"path": "f.py", "content": content}})
@@ -295,28 +351,24 @@ def t_agent_nested_braces():
     assert r is not None
     assert r["parameters"]["content"] == content
 
-test("agent: handles nested braces in file content", t_agent_nested_braces)
 
-
-def t_agent_preamble():
+def test_agent_detects_json_with_preamble_text():
     from foder.agent import _extract_tool_call
     r = _extract_tool_call('Sure!\n{"tool": "dir_list", "parameters": {"path": "."}}')
     assert r is not None
 
-test("agent: detects JSON with preamble text", t_agent_preamble)
 
-
-def t_agent_fenced_with_indent():
+def test_agent_detects_fenced_json_with_indentation():
     from foder.agent import _extract_tool_call, _is_tool_call
-    text = '```json\n            {"tool": "shell_exec", "parameters": {"command": "gcc hello.c -o hello"}}\n```'
+    text = ('```json\n            '
+            '{"tool": "shell_exec", "parameters": {"command": "gcc hello.c -o hello"}}'
+            '\n```')
     assert _is_tool_call(text)
     r = _extract_tool_call(text)
     assert r is not None and r["tool"] == "shell_exec"
 
-test("agent: detects fenced JSON with indentation", t_agent_fenced_with_indent)
 
-
-def t_agent_no_false_positive():
+def test_agent_no_false_positives_on_plain_text():
     from foder.agent import _extract_tool_call
     for text in [
         "The file has been created.",
@@ -327,55 +379,43 @@ def t_agent_no_false_positive():
         r = _extract_tool_call(text)
         assert r is None, f"false positive on: {repr(text)}"
 
-test("agent: no false positives on plain text", t_agent_no_false_positive)
 
-
-def t_agent_history_trim():
+def test_agent_history_trimming_caps_at_limit():
     from foder.agent import _trim_history, _MAX_HISTORY_MESSAGES
     history = [{"role": "user", "content": str(i)} for i in range(50)]
     trimmed = _trim_history(history)
     assert len(trimmed) <= _MAX_HISTORY_MESSAGES
 
-test("agent: history trimming caps at limit", t_agent_history_trim)
 
-
-def t_agent_tool_result_truncation():
+def test_agent_tool_result_truncation_works():
     from foder.agent import _truncate_tool_result, _TOOL_RESULT_MAX_CHARS
-    # Short input — must pass through unchanged
     short = "x" * 100
     assert _truncate_tool_result(short) == short
-    # Long input — must be truncated with marker
-    long = "x" * (_TOOL_RESULT_MAX_CHARS * 3)
+    long  = "x" * (_TOOL_RESULT_MAX_CHARS * 3)
     result = _truncate_tool_result(long)
     assert len(result) <= _TOOL_RESULT_MAX_CHARS + 30, f"len={len(result)}"
-    assert "truncated" in result, "missing truncation marker"
-
-test("agent: tool result truncation works", t_agent_tool_result_truncation)
+    assert "truncated" in result
 
 
 # ── Prompt ────────────────────────────────────────────────────────────────────
 
-def t_prompt_structure():
+def test_prompt_system_message_prepended_correctly():
     from foder.prompt import build_messages
     msgs = build_messages([{"role": "user", "content": "hello"}])
     assert msgs[0]["role"] == "system"
     assert "WORKSPACE" in msgs[0]["content"]
     assert msgs[1]["role"] == "user"
 
-test("prompt: system message prepended correctly", t_prompt_structure)
 
-
-def t_prompt_has_tools():
+def test_prompt_all_tool_names_present():
     from foder.prompt import build_messages
-    msgs = build_messages([])
+    msgs    = build_messages([])
     content = msgs[0]["content"]
     for tool in ["file_write", "file_read", "dir_list", "shell_exec"]:
         assert tool in content, f"missing tool: {tool}"
 
-test("prompt: all tool names present", t_prompt_has_tools)
 
-
-def t_prompt_workspace_dynamic():
+def test_prompt_workspace_updates_dynamically():
     import foder.config as c
     from foder.prompt import build_messages
     orig = c.WORKSPACE
@@ -385,10 +425,8 @@ def t_prompt_workspace_dynamic():
         assert d in msgs[0]["content"], "workspace not in prompt"
     c.WORKSPACE = orig
 
-test("prompt: workspace updates dynamically with !cd", t_prompt_workspace_dynamic)
 
-
-def t_prompt_custom_instructions():
+def test_prompt_custom_instructions_injected():
     import foder.config as c
     from foder.prompt import build_messages
     orig = c.CUSTOM_INSTRUCTIONS
@@ -397,12 +435,10 @@ def t_prompt_custom_instructions():
     assert "USE_TYPESCRIPT_ONLY" in msgs[0]["content"]
     c.CUSTOM_INSTRUCTIONS = orig
 
-test("prompt: custom instructions injected", t_prompt_custom_instructions)
-
 
 # ── Session persistence ───────────────────────────────────────────────────────
 
-def t_session_roundtrip():
+def test_session_save_load_roundtrip():
     import foder.main as m
     orig_dir  = m._HISTORY_DIR
     orig_file = m._HISTORY_FILE
@@ -419,10 +455,8 @@ def t_session_roundtrip():
     m._HISTORY_DIR  = orig_dir
     m._HISTORY_FILE = orig_file
 
-test("session: save/load roundtrip", t_session_roundtrip)
 
-
-def t_session_missing_file():
+def test_session_missing_file_returns_empty_list():
     import foder.main as m
     orig = m._HISTORY_FILE
     m._HISTORY_FILE = Path("/tmp/foder_no_such_file_xyz.json")
@@ -430,10 +464,8 @@ def t_session_missing_file():
     assert r == []
     m._HISTORY_FILE = orig
 
-test("session: missing file returns empty list", t_session_missing_file)
 
-
-def t_session_corrupted():
+def test_session_corrupted_file_returns_empty_list():
     import foder.main as m
     orig_dir  = m._HISTORY_DIR
     orig_file = m._HISTORY_FILE
@@ -447,10 +479,8 @@ def t_session_corrupted():
     m._HISTORY_DIR  = orig_dir
     m._HISTORY_FILE = orig_file
 
-test("session: corrupted file returns empty list", t_session_corrupted)
 
-
-def t_session_trim_on_save():
+def test_session_large_history_trimmed_on_save():
     import foder.main as m
     orig_dir  = m._HISTORY_DIR
     orig_file = m._HISTORY_FILE
@@ -464,20 +494,16 @@ def t_session_trim_on_save():
     m._HISTORY_DIR  = orig_dir
     m._HISTORY_FILE = orig_file
 
-test("session: large history trimmed on save", t_session_trim_on_save)
 
+# ── @file context injection ───────────────────────────────────────────────────
 
-# ── @file injection ───────────────────────────────────────────────────────────
-
-def t_inject_passthrough():
+def test_at_file_no_refs_passes_through_unchanged():
     from foder.main import _inject_file_context
     r = _inject_file_context("just a normal message")
     assert r == "just a normal message"
 
-test("@file: no refs passes through unchanged", t_inject_passthrough)
 
-
-def t_inject_file():
+def test_at_file_injects_file_content():
     import foder.config as c
     from foder.main import _inject_file_context
     with tempfile.TemporaryDirectory() as d:
@@ -488,10 +514,8 @@ def t_inject_file():
         assert 'print("hi")' in r
         assert "fix this" in r
 
-test("@file: injects file content", t_inject_file)
 
-
-def t_inject_missing_file():
+def test_at_file_missing_file_doesnt_crash():
     import foder.config as c
     from foder.main import _inject_file_context
     with tempfile.TemporaryDirectory() as d:
@@ -499,12 +523,10 @@ def t_inject_missing_file():
         r = _inject_file_context("@nonexistent.py do something")
         assert "do something" in r
 
-test("@file: missing file doesn't crash", t_inject_missing_file)
-
 
 # ── Snapshot ──────────────────────────────────────────────────────────────────
 
-def t_snapshot():
+def test_snapshot_captures_workspace_files():
     import foder.config as c
     import foder.main as m
     with tempfile.TemporaryDirectory() as d:
@@ -515,33 +537,12 @@ def t_snapshot():
         assert "a.py" in snap
         assert snap["a.py"]["size"] > 0
 
-test("snapshot: captures workspace files", t_snapshot)
-
 
 # ── Theme system ──────────────────────────────────────────────────────────────
 
-def t_themes():
-    from foder.main import THEMES, _apply_theme, _A2, _A3
+def test_themes_all_apply_correctly():
+    import foder.main as m
+    from foder.main import THEMES, _apply_theme
     for key in THEMES:
         _apply_theme(key)
-        import foder.main as m
         assert m._A2 == THEMES[key]["A2"], f"theme {key} A2 mismatch"
-
-test("themes: all themes apply correctly", t_themes)
-
-
-# ── Results ───────────────────────────────────────────────────────────────────
-
-print()
-passed = sum(1 for s, _ in results if s == "PASS")
-failed = sum(1 for s, _ in results if s == "FAIL")
-
-for status, name in results:
-    icon = "✓" if status == "PASS" else "✗"
-    print(f"  {icon}  {name}")
-
-print()
-print(f"  {passed} passed  ·  {failed} failed  ·  {len(results)} total")
-print()
-
-sys.exit(0 if failed == 0 else 1)

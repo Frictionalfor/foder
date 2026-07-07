@@ -4,6 +4,39 @@ All changes tracked by version. Most recent first.
 
 ---
 
+## v0.3.0 — 2026-07-07
+
+### Improvements
+
+| # | Feature | Description | Files |
+|---|---------|-------------|-------|
+| 1 | `file_edit` fuzzy whitespace fallback | When `old_str` isn't found by exact match, a second pass normalises per-line leading whitespace using a regex and retries. Handles the common failure where the model sends slightly different indentation than what's on disk. On failure, returns a nearest-match context snippet so the next attempt is more precise. | `tools/file_edit.py` |
+| 2 | `file_read` line range support | New optional `start_line` / `end_line` parameters (1-indexed, inclusive, negative values count from end). Returns a `[lines S-E of N]` header so the agent knows which slice it's reading. Cuts token waste on large files — agent reads only the relevant section before editing. | `tools/file_read.py` |
+| 3 | `dir_remove` recursive flag | New optional `recursive` boolean parameter. Without it, non-empty directories return an error listing their contents and instructions to pass `recursive=true`. With it, uses `shutil.rmtree`. Workspace root is always protected regardless of flag. | `tools/dir_remove.py` |
+| 4 | `dir_remove` in prompt tool list | `dir_remove` added to `_PROMPT_TOOLS` in the registry so the model sees its new `recursive` parameter in the system prompt. | `tools/registry.py` |
+| 5 | System prompt updated | `DIFF-BASED EDITING` rule block updated to mention whitespace-normalisation fallback and `start_line`/`end_line` usage for large files. | `prompt.py` |
+
+### Bug Fixes
+
+| # | Bug | Fix |
+|---|-----|-----|
+| 1 | `/build` crashes with `rich.errors.MarkupError` on rose theme | `_handle_build` used a typo `[/{_A2}]` as closing tag where the opening tag was `[{_DIM}]`. When theme is rose, `_A2 = #FB7185`, generating `[/#FB7185]` which Rich cannot match. Fixed by rewriting the Panel content as a `Text()` object (no f-string markup). | `main.py` |
+| 2 | `/build` result panel used f-string markup for `_A2` | Same class of bug in the "Project generated" success Panel — `out.append(f"  [{_A2}]✓ ...[/{_A2}]")` is invalid inside a `Text` object. Fixed by passing the style as a keyword argument. | `main.py` |
+| 3 | `dir_remove` counted entries after `shutil.rmtree` | `len(contents)` was referenced in the success message after the directory was already deleted, which would always return the correct value but was logically unsound. Captured `entry_count` before calling `shutil.rmtree`. | `tools/dir_remove.py` |
+
+### Test Suite
+
+| # | Change | Description |
+|---|--------|-------------|
+| 1 | `test_unit.py` rewritten as pytest module | Removed module-level `sys.exit()` that caused pytest `INTERNALERROR` on collection. All 42 original tests preserved plus 9 new tests covering the three new tool features. | `tests/test_unit.py` |
+| 2 | `test_agent_logic.py` rewritten as pytest module | Same fix — module-level `sys.exit()` removed, all checks converted to `def test_*` functions. | `tests/test_agent_logic.py` |
+| 3 | New tests for `file_read` line ranges | `test_tool_file_read_line_range`, `test_tool_file_read_negative_line_range` | `tests/test_unit.py` |
+| 4 | New tests for `file_edit` normalization | `test_tool_file_edit_exact_match`, `test_tool_file_edit_normalized_whitespace_fallback`, `test_tool_file_edit_not_found_gives_context_hint` | `tests/test_unit.py` |
+| 5 | New tests for `dir_remove` recursive | `test_tool_dir_remove_empty_dir`, `test_tool_dir_remove_non_empty_requires_recursive`, `test_tool_dir_remove_recursive_flag` | `tests/test_unit.py` |
+| 6 | Total passing tests | **82 / 82** (up from 42) in 2.3s | — |
+
+---
+
 ## v0.2.0 — 2026-06-23
 
 ### Major Features

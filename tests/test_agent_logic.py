@@ -1,12 +1,13 @@
 """
-Unit tests for agent.py logic — no Ollama connection required.
-Run with: OLLAMA_MODEL=qwen3.5:9b python3 test_agent_logic.py
+Agent logic unit tests — pytest compatible. No Ollama connection required.
+
+Run with:  pytest tests/test_agent_logic.py -v
 """
 import os
-import sys
+import pytest
 
 # Prevent config from making HTTP call at import time
-os.environ.setdefault("OLLAMA_MODEL", "qwen3.5:9b")
+os.environ.setdefault("OLLAMA_MODEL", "qwen2.5-coder:3b")
 
 from foder.agent import (
     _extract_tool_call,
@@ -17,145 +18,212 @@ from foder.agent import (
     _trim_history,
     _truncate_tool_result,
     _MAX_HISTORY_MESSAGES,
+    _TOOL_RESULT_MAX_CHARS,
 )
 
-failures = []
 
-def check(name: str, cond: bool, detail: str = "") -> None:
-    if cond:
-        print(f"  OK    {name}")
-    else:
-        print(f"  FAIL  {name}  {detail}")
-        failures.append(name)
+# ── _extract_tool_call ────────────────────────────────────────────────────────
+
+def test_extract_bare_json():
+    r = _extract_tool_call('{"tool":"dir_list","parameters":{"path":"."}}')
+    assert r is not None and r["tool"] == "dir_list"
 
 
-print("\nAgent logic unit tests")
-print("=" * 50)
+def test_extract_with_preamble():
+    r = _extract_tool_call('Sure!\n{"tool":"dir_list","parameters":{"path":"."}}')
+    assert r is not None and r["tool"] == "dir_list"
 
-# ── _extract_tool_call ─────────────────────────────────────────────────────────
 
-r = _extract_tool_call('{"tool":"dir_list","parameters":{"path":"."}}')
-check("extract bare JSON", r is not None and r["tool"] == "dir_list")
+def test_extract_fenced_json_block():
+    fenced = '```json\n{"tool":"file_read","parameters":{"path":"x"}}\n```'
+    r = _extract_tool_call(fenced)
+    assert r is not None and r["tool"] == "file_read"
 
-r = _extract_tool_call('Sure!\n{"tool":"dir_list","parameters":{"path":"."}}')
-check("extract with preamble", r is not None and r["tool"] == "dir_list")
 
-fenced = '```json\n{"tool":"file_read","parameters":{"path":"x"}}\n```'
-r = _extract_tool_call(fenced)
-check("extract fenced ```json block", r is not None and r["tool"] == "file_read", str(r))
+def test_extract_plain_fenced_block():
+    fenced = '```\n{"tool":"shell_exec","parameters":{"command":"ls"}}\n```'
+    r = _extract_tool_call(fenced)
+    assert r is not None and r["tool"] == "shell_exec"
 
-fenced2 = '```\n{"tool":"shell_exec","parameters":{"command":"ls"}}\n```'
-r = _extract_tool_call(fenced2)
-check("extract plain fenced block", r is not None and r["tool"] == "shell_exec", str(r))
 
-big_content = "x" * 5000
-big_json = '{"tool":"file_write","parameters":{"path":"f.py","content":"' + big_content + '"}}'
-r = _extract_tool_call(big_json)
-check("extract large payload (>5000 chars)", r is not None and r["tool"] == "file_write")
+def test_extract_large_payload():
+    big_content = "x" * 5000
+    big_json = (
+        '{"tool":"file_write","parameters":{"path":"f.py","content":"'
+        + big_content + '"}}'
+    )
+    r = _extract_tool_call(big_json)
+    assert r is not None and r["tool"] == "file_write"
 
-nested = '{"tool":"file_write","parameters":{"path":"f.py","content":"def f():\\n    d = {\\"key\\": \\"val\\"}\\n"}}'
-r = _extract_tool_call(nested)
-check("extract nested braces in content", r is not None)
 
-check("no false positive: plain text",       _extract_tool_call("The file has been created.") is None)
-check("no false positive: empty string",     _extract_tool_call("") is None)
-check("no false positive: tool result line", _extract_tool_call("[tool: file_write]\nresult:\n[ok]") is None)
+def test_extract_nested_braces_in_content():
+    nested = (
+        '{"tool":"file_write","parameters":{"path":"f.py",'
+        '"content":"def f():\\n    d = {\\"key\\": \\"val\\"}\\n"}}'
+    )
+    r = _extract_tool_call(nested)
+    assert r is not None
 
-# ── _is_tool_call ──────────────────────────────────────────────────────────────
 
-check("is_tool_call: bare JSON",         _is_tool_call('{"tool":"dir_list","parameters":{"path":"."}}'))
-check("is_tool_call: with preamble",     _is_tool_call('Done!\n{"tool":"dir_list","parameters":{"path":"."}}'))
-check("is_tool_call: plain text False",  not _is_tool_call("Just a response."))
-check("is_tool_call: tool result False", not _is_tool_call("[tool: file_write]\nresult:\n[ok]"))
+def test_extract_no_false_positive_plain_text():
+    assert _extract_tool_call("The file has been created.") is None
 
-# ── _strip_tool_json ───────────────────────────────────────────────────────────
 
-# Single call stripped
-single = '{"tool":"file_write","parameters":{"path":"a.py","content":"x"}}'
-c = _strip_tool_json(single)
-check("strip single tool call", '"tool"' not in c, repr(c))
+def test_extract_no_false_positive_empty_string():
+    assert _extract_tool_call("") is None
 
-# Multi-file: two tool calls stripped (the main bug)
-multi = (
-    '{"tool":"file_write","parameters":{"path":"a.py","content":"x"}}\n'
-    '{"tool":"file_write","parameters":{"path":"b.py","content":"y"}}'
-)
-c = _strip_tool_json(multi)
-check("strip multi-file (2 tool calls)", '"tool"' not in c, repr(c))
 
-# Large content stripped completely
-big = '{"tool":"file_write","parameters":{"path":"f.py","content":"' + "x" * 500 + '"}}'
-c = _strip_tool_json(big)
-check("strip large content (500 chars)", '"tool"' not in c, f"len={len(c)}")
+def test_extract_no_false_positive_tool_result_line():
+    assert _extract_tool_call("[tool: file_write]\nresult:\n[ok]") is None
 
-# Plain text fully preserved
-plain = "Done! Created greet.py. Run: python3 greet.py"
-check("plain text preserved", _strip_tool_json(plain) == plain)
 
-# Mixed: tool call + trailing human text
-mixed = '{"tool":"file_write","parameters":{"path":"a.py","content":"x"}}\nDone! File created.'
-c = _strip_tool_json(mixed)
-check("mixed: JSON stripped, text kept", '"tool"' not in c and "Done" in c, repr(c))
+def test_extract_no_false_positive_python_code_block():
+    assert _extract_tool_call("Here is the code:\n```python\nprint('hi')\n```") is None
 
-# Three tool calls (fullstack project)
-triple = (
-    '{"tool":"file_write","parameters":{"path":"a.py","content":"x"}}\n'
-    '{"tool":"file_write","parameters":{"path":"b.py","content":"y"}}\n'
-    '{"tool":"shell_exec","parameters":{"command":"python a.py"}}'
-)
-c = _strip_tool_json(triple)
-check("strip triple tool calls", '"tool"' not in c, repr(c))
 
-# ── _strip_one_tool_call ───────────────────────────────────────────────────────
+# ── _is_tool_call ─────────────────────────────────────────────────────────────
 
-after = _strip_one_tool_call(multi)
-check("strip_one: first removed", "a.py" not in after or '"tool"' in after)
-check("strip_one: second remains", '"tool"' in after, repr(after))
+def test_is_tool_call_bare_json():
+    assert _is_tool_call('{"tool":"dir_list","parameters":{"path":"."}}')
 
-# ── _LoopDetector ──────────────────────────────────────────────────────────────
 
-ld = _LoopDetector()
-check("loop: first response no trigger",  ld.check_response("response A") is None)
-check("loop: different response no trigger", ld.check_response("response B") is None)
-msg = ld.check_response("response B")  # same as last -> streak=2
-check("loop: repeated response triggers", msg is not None, repr(msg))
+def test_is_tool_call_with_preamble():
+    assert _is_tool_call('Done!\n{"tool":"dir_list","parameters":{"path":"."}}')
 
-ld2 = _LoopDetector()
-check("tool loop: first call no trigger",    ld2.record_tool("file_write", {"path":"a.py"}) is None)
-check("tool loop: second call no trigger",   ld2.record_tool("file_write", {"path":"a.py"}) is None)
-check("tool loop: third call no trigger",    ld2.record_tool("file_write", {"path":"a.py"}) is None)
-msg2 = ld2.record_tool("file_write", {"path":"a.py"})  # 4th = trigger
-check("tool loop: 4th call triggers",        msg2 is not None, repr(msg2))
 
-# ── _trim_history ──────────────────────────────────────────────────────────────
+def test_is_tool_call_plain_text_false():
+    assert not _is_tool_call("Just a response.")
 
-big_hist = [{"role": "user", "content": str(i)} for i in range(100)]
-trimmed = _trim_history(big_hist)
-check("history trim: capped at limit", len(trimmed) <= _MAX_HISTORY_MESSAGES)
-check("history trim: keeps latest", trimmed[-1]["content"] == "99")
 
-# ── _truncate_tool_result ──────────────────────────────────────────────────────
+def test_is_tool_call_tool_result_false():
+    assert not _is_tool_call("[tool: file_write]\nresult:\n[ok]")
 
-short = "short result"
-check("truncate: short result unchanged", _truncate_tool_result(short) == short)
-long_r = "x" * 2000
-t = _truncate_tool_result(long_r)
-check("truncate: long result shortened", len(t) < 2000 and "truncated" in t)
 
-# ── Results ────────────────────────────────────────────────────────────────────
+# ── _strip_tool_json ──────────────────────────────────────────────────────────
 
-print("=" * 50)
-passed = sum(1 for _ in range(1) if not failures) * (
-    len([l for l in open(__file__).readlines() if l.strip().startswith("check(")])
-) - len(failures)
+def test_strip_single_tool_call():
+    single = '{"tool":"file_write","parameters":{"path":"a.py","content":"x"}}'
+    c = _strip_tool_json(single)
+    assert '"tool"' not in c
 
-total = len([l for l in open(__file__).readlines() if l.strip().startswith("check(")])
-passed = total - len(failures)
-print(f"  {passed} passed  {len(failures)} failed  ({total} total)")
 
-if failures:
-    print(f"\n  FAILED: {failures}")
-    sys.exit(1)
-else:
-    print("\n  ALL TESTS PASSED")
-    sys.exit(0)
+def test_strip_multi_file_two_tool_calls():
+    multi = (
+        '{"tool":"file_write","parameters":{"path":"a.py","content":"x"}}\n'
+        '{"tool":"file_write","parameters":{"path":"b.py","content":"y"}}'
+    )
+    c = _strip_tool_json(multi)
+    assert '"tool"' not in c
+
+
+def test_strip_large_content():
+    big = '{"tool":"file_write","parameters":{"path":"f.py","content":"' + "x" * 500 + '"}}'
+    c = _strip_tool_json(big)
+    assert '"tool"' not in c
+
+
+def test_strip_plain_text_preserved():
+    plain = "Done! Created greet.py. Run: python3 greet.py"
+    assert _strip_tool_json(plain) == plain
+
+
+def test_strip_mixed_json_and_text():
+    mixed = '{"tool":"file_write","parameters":{"path":"a.py","content":"x"}}\nDone! File created.'
+    c = _strip_tool_json(mixed)
+    assert '"tool"' not in c
+    assert "Done" in c
+
+
+def test_strip_triple_tool_calls():
+    triple = (
+        '{"tool":"file_write","parameters":{"path":"a.py","content":"x"}}\n'
+        '{"tool":"file_write","parameters":{"path":"b.py","content":"y"}}\n'
+        '{"tool":"shell_exec","parameters":{"command":"python a.py"}}'
+    )
+    c = _strip_tool_json(triple)
+    assert '"tool"' not in c
+
+
+# ── _strip_one_tool_call ──────────────────────────────────────────────────────
+
+def test_strip_one_removes_first_keeps_second():
+    multi = (
+        '{"tool":"file_write","parameters":{"path":"a.py","content":"x"}}\n'
+        '{"tool":"file_write","parameters":{"path":"b.py","content":"y"}}'
+    )
+    after = _strip_one_tool_call(multi)
+    # The second tool call must still be present
+    assert '"tool"' in after
+
+
+# ── _LoopDetector ─────────────────────────────────────────────────────────────
+
+def test_loop_detector_first_response_no_trigger():
+    ld = _LoopDetector()
+    assert ld.check_response("response A") is None
+
+
+def test_loop_detector_different_response_no_trigger():
+    ld = _LoopDetector()
+    ld.check_response("response A")
+    assert ld.check_response("response B") is None
+
+
+def test_loop_detector_repeated_response_triggers():
+    ld = _LoopDetector()
+    ld.check_response("response B")
+    msg = ld.check_response("response B")   # second identical → streak=2
+    assert msg is not None
+
+
+def test_loop_detector_tool_first_call_no_trigger():
+    ld = _LoopDetector()
+    assert ld.record_tool("file_write", {"path": "a.py"}) is None
+
+
+def test_loop_detector_tool_second_call_no_trigger():
+    ld = _LoopDetector()
+    ld.record_tool("file_write", {"path": "a.py"})
+    assert ld.record_tool("file_write", {"path": "a.py"}) is None
+
+
+def test_loop_detector_tool_third_call_no_trigger():
+    ld = _LoopDetector()
+    for _ in range(3):
+        result = ld.record_tool("file_write", {"path": "a.py"})
+    assert result is None
+
+
+def test_loop_detector_tool_fourth_call_triggers():
+    ld = _LoopDetector()
+    for _ in range(4):
+        msg = ld.record_tool("file_write", {"path": "a.py"})
+    assert msg is not None
+
+
+# ── _trim_history ─────────────────────────────────────────────────────────────
+
+def test_history_trim_capped_at_limit():
+    big_hist = [{"role": "user", "content": str(i)} for i in range(100)]
+    trimmed  = _trim_history(big_hist)
+    assert len(trimmed) <= _MAX_HISTORY_MESSAGES
+
+
+def test_history_trim_keeps_latest_messages():
+    big_hist = [{"role": "user", "content": str(i)} for i in range(100)]
+    trimmed  = _trim_history(big_hist)
+    assert trimmed[-1]["content"] == "99"
+
+
+# ── _truncate_tool_result ─────────────────────────────────────────────────────
+
+def test_truncate_short_result_unchanged():
+    short = "short result"
+    assert _truncate_tool_result(short) == short
+
+
+def test_truncate_long_result_shortened():
+    long_r = "x" * 2000
+    t = _truncate_tool_result(long_r)
+    assert len(t) < 2000
+    assert "truncated" in t

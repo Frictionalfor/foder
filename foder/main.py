@@ -1409,14 +1409,18 @@ def _handle_build(description: str, history: list) -> None:
     skill_name = skill['name'] if skill else 'general'
 
     console.print()
-    console.print(Panel(
-        f"  [{_A2}]PROJECT GENERATION MODE[/{_A2}]\n\n"
-        f"  [{_DIM}]Building:[/{_DIM}] {description}\n"
-        f"  [{_DIM}]Skill:   [/{_A2}] {skill_name}\n\n"
-        f"  [{_DIM}]Foder will architect, generate, and verify a complete project.[/{_DIM}]\n"
-        f"  [{_DIM}]This may take several iterations. Press Ctrl+C to interrupt.[/{_DIM}]",
-        border_style=_A4, padding=(0,1)
-    ))
+    # Build the panel content as a Text object to avoid Rich markup injection
+    # issues with hex colour codes (e.g. #FB7185 contains a '/' that Rich
+    # misreads as a closing tag when embedded in an f-string).
+    header = Text()
+    header.append("  PROJECT GENERATION MODE\n\n", style=f"bold {_A2}")
+    header.append("  Building: ", style=_DIM)
+    header.append(f"{description}\n", style="default")
+    header.append("  Skill:    ", style=_DIM)
+    header.append(f"{skill_name}\n\n", style="default")
+    header.append("  Foder will architect, generate, and verify a complete project.\n", style=_DIM)
+    header.append("  This may take several iterations. Press Ctrl+C to interrupt.", style=_DIM)
+    console.print(Panel(header, border_style=_A4, padding=(0, 1)))
     console.print()
 
     if not _confirm("start project generation?"):
@@ -1441,7 +1445,8 @@ def _handle_build(description: str, history: list) -> None:
         if added:
             console.print()
             out = Text()
-            out.append(f"  [{_A2}]✓ Project generated — {len(added)} file(s) created[/{_A2}]\n\n")
+            out.append(f"  ✓ Project generated — {len(added)} file(s) created\n\n",
+                       style=f"bold {_A2}")
             for f in sorted(added)[:20]:
                 out.append(f"    + {f}\n", style=_OK)
             if len(added) > 20:

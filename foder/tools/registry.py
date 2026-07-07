@@ -120,7 +120,7 @@ def _resolve(name: str) -> str | None:
 # Only expose the core tools to keep the system prompt lean.
 _PROMPT_TOOLS = [
     "file_read", "file_write", "file_edit",
-    "dir_list", "dir_create",
+    "dir_list", "dir_create", "dir_remove",
     "shell_exec", "grep_search", "git_tool",
 ]
 
