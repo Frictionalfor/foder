@@ -330,3 +330,155 @@ def test_calculator_regression_self_correction_flow():
         assert is_valid is True
 
     config.WORKSPACE = orig_ws
+
+
+# ── 8. Java & Password Generator Scenarios ───────────────────────────────────
+
+def test_infer_filename_java_and_password():
+    # Java prompt and code with class HelloWorld
+    java_code = "public class HelloWorld {\n    public static void main(String[] args) {\n        System.out.println(\"Hello\");\n    }\n}"
+    fname_java = _infer_filename(java_code, "can you create a java file and write a hello world program", "java")
+    assert fname_java == "HelloWorld.java"
+
+    # Explicit .java in prompt
+    fname_explicit = _infer_filename("class Greeter {}", "create App.java please", "java")
+    assert fname_explicit == "App.java"
+
+    # Password generator prompt
+    pwd_code = "import secrets\nprint(secrets.token_hex(16))\n"
+    fname_pwd = _infer_filename(pwd_code, "write a python script that generates a random 16-character password", "python")
+    assert fname_pwd == "password_generator.py"
+
+
+def test_agent_run_on_token_callback():
+    from unittest.mock import patch
+
+    class TokenCounterCallback(AgentCallbacks):
+        def __init__(self):
+            self.tokens = []
+        def on_token(self, token: str):
+            self.tokens.append(token)
+
+    cb = TokenCounterCallback()
+    with patch("foder.agent.chat_stream", return_value=iter(["Hello", " ", "world!"])):
+        token_gen, hist = run("hello", [], callbacks=cb)
+        res = "".join(list(token_gen))
+        assert res == "Hello world!"
+        assert cb.tokens == ["Hello", " ", "world!"]
+
+
+def test_agent_run_empty_response_fallback_after_tool():
+    from unittest.mock import patch
+    orig_ws = config.WORKSPACE
+    with tempfile.TemporaryDirectory() as d:
+        config.WORKSPACE = Path(d)
+        
+        # Simulate LLM emitting file_write, then on next turn returning empty string ""
+        turns = [
+            iter(['{"tool": "file_write", "parameters": {"path": "test.txt", "content": "hello"}}']),
+            iter([""]),
+        ]
+        def fake_chat_stream(msgs):
+            if turns:
+                return turns.pop(0)
+            return iter([""])
+
+        with patch("foder.agent.chat_stream", side_effect=fake_chat_stream):
+            token_gen, hist = run("create test.txt with hello", [])
+            output = "".join(list(token_gen))
+            # Output must NOT be empty string!
+            assert len(output.strip()) > 0
+            assert "test.txt" in output
+            assert (Path(d) / "test.txt").exists()
+            assert (Path(d) / "test.txt").read_text() == "hello"
+
+    config.WORKSPACE = orig_ws
+
+
+def test_agent_run_code_block_immediate_confirmation():
+    from unittest.mock import patch
+    orig_ws = config.WORKSPACE
+    with tempfile.TemporaryDirectory() as d:
+        config.WORKSPACE = Path(d)
+        
+        # LLM returns raw code block instead of JSON
+        mock_response = "```python\n# calculator.py\ndef add(a, b): return a + b\n```"
+        with patch("foder.agent.chat_stream", return_value=iter([mock_response])):
+            token_gen, hist = run("write an add function", [])
+            output = "".join(list(token_gen))
+            assert "Created `calculator.py`" in output
+            assert (Path(d) / "calculator.py").exists()
+
+    config.WORKSPACE = orig_ws
+
+
+def test_agent_run_dir_list_multi_turn_with_preamble():
+    """
+    Test that when the model generates preamble followed by dir_list tool call,
+    the agent executes dir_list, loops back to the model with the tool result,
+    and returns the model's actual answer rather than aborting early on the preamble.
+    """
+    from unittest.mock import patch
+    orig_ws = config.WORKSPACE
+    with tempfile.TemporaryDirectory() as d:
+        config.WORKSPACE = Path(d)
+        (Path(d) / "foo.py").write_text("print('foo')")
+        (Path(d) / "bar.py").write_text("print('bar')")
+
+        turns = [
+            iter(["This will list all the files in the current workspace. {\"tool\": \"dir_list\", \"parameters\": {\"path\": \".\"}}"]),
+            iter(["Your workspace contains two files: foo.py and bar.py."]),
+        ]
+        def fake_chat_stream(msgs):
+            if turns:
+                return turns.pop(0)
+            return iter([""])
+
+        with patch("foder.agent.chat_stream", side_effect=fake_chat_stream):
+            token_gen, hist = run("inspect the workspace and list the files", [])
+            output = "".join(list(token_gen))
+            assert "foo.py" in output
+            assert "bar.py" in output
+            assert "Your workspace contains" in output
+
+    config.WORKSPACE = orig_ws
+
+
+def test_agent_run_file_edit_fast_confirmation():
+    """
+    Test that file_edit succeeds and triggers fast-path confirmation when
+    syntax verifies and no execution was requested.
+    """
+    from unittest.mock import patch
+    orig_ws = config.WORKSPACE
+    with tempfile.TemporaryDirectory() as d:
+        config.WORKSPACE = Path(d)
+        target = Path(d) / "script.py"
+        target.write_text("def greet():\n    print('hello')\n")
+
+        turns = [
+            iter(['{"tool": "file_edit", "parameters": {"path": "script.py", "old_str": "print(\'hello\')", "new_str": "print(\'hello world\')"}}']),
+        ]
+        def fake_chat_stream(msgs):
+            if turns:
+                return turns.pop(0)
+            return iter([""])
+
+        with patch("foder.agent.chat_stream", side_effect=fake_chat_stream):
+            token_gen, hist = run("modify script.py to say hello world", [])
+            output = "".join(list(token_gen))
+            assert "Updated script.py and verified syntax successfully." in output
+            assert "hello world" in target.read_text()
+
+    config.WORKSPACE = orig_ws
+
+
+def test_prompt_compact_tool_signatures():
+    """Verify that _format_compact_tools() produces readable signatures."""
+    from foder.prompt import _format_compact_tools
+    sig_block = _format_compact_tools()
+    assert "- file_write(path: string, content: string):" in sig_block
+    assert "- dir_list(path?: string):" in sig_block
+    assert "- file_read(path: string" in sig_block
+    assert "- shell_exec(command: string):" in sig_block
+

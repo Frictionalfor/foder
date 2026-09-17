@@ -95,14 +95,14 @@ def chat_stream(messages: list[dict]) -> Iterator[str]:
     import json as _json
     import time
 
-    # Per-token idle timeout: generous but bounded
-    per_token_timeout = max(30.0, config.LLM_TIMEOUT / 4)
+    # Per-token idle timeout: generous for local CPU inference
+    per_token_timeout = max(300.0, config.LLM_TIMEOUT)
 
     timeout = httpx.Timeout(
-        connect=10.0,
+        connect=15.0,
         read=per_token_timeout,
-        write=10.0,
-        pool=10.0,
+        write=30.0,
+        pool=15.0,
     )
 
     payload = {

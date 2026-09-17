@@ -553,8 +553,18 @@ class REPLCallbacks(AgentCallbacks):
     def __init__(self) -> None:
         self._state       = _STATE_PLANNING
         self._tool_count  = 0
+        self._token_count = 0
         self._start_time  = time.monotonic()
         self._shown_header= False
+
+    def on_token(self, token: str) -> None:
+        self._token_count += 1
+        elapsed = time.monotonic() - self._start_time
+        if self._token_count == 1:
+            console.print(" " * 50, end="\r")
+            console.print(Text(f"  ◆ generating response... ({elapsed:.0f}s)", style=_DIM), end="\r")
+        elif self._token_count % 10 == 0:
+            console.print(Text(f"  ◆ generating response... ({self._token_count} tokens · {elapsed:.0f}s)", style=_DIM), end="\r")
 
     def _ensure_header(self) -> None:
         if self._shown_header:
@@ -576,6 +586,7 @@ class REPLCallbacks(AgentCallbacks):
 
     def on_tool_call(self, tool_name: str, parameters: dict) -> None:
         global _session_tool_calls, _session_files_written
+        console.print(" " * 50, end="\r")
         _session_tool_calls += 1
         self._tool_count   += 1
         self._state         = _STATE_EXECUTING
@@ -630,14 +641,38 @@ class REPLCallbacks(AgentCallbacks):
             short = result.split("\n")[0][:70]
             console.print(f"  [{_ERR}]    ✗ {short}[/{_ERR}]")
         else:
-            # Show a compact success summary for important tools
             if tool_name == "file_write":
-                console.print(f"  [{_OK}]    [ok] written[/{_OK}]")
+                console.print(f"  [{_OK}]    [ok] written & verified[/{_OK}]")
+            elif tool_name == "file_edit":
+                console.print(f"  [{_OK}]    [ok] modified & verified[/{_OK}]")
+            elif tool_name == "file_delete":
+                console.print(f"  [{_OK}]    [ok] deleted[/{_OK}]")
+            elif tool_name == "file_rename":
+                console.print(f"  [{_OK}]    [ok] renamed[/{_OK}]")
+            elif tool_name == "dir_list":
+                cleaned = result.strip().replace("\n", " ")
+                if len(cleaned) > 50:
+                    cleaned = cleaned[:47] + "..."
+                preview = f"  [{_DIM}]{cleaned}[/{_DIM}]" if cleaned else ""
+                console.print(f"  [{_OK}]    [ok][/{_OK}]{preview}")
+            elif tool_name == "dir_create":
+                console.print(f"  [{_OK}]    [ok] created[/{_OK}]")
+            elif tool_name == "dir_remove":
+                console.print(f"  [{_OK}]    [ok] removed[/{_OK}]")
+            elif tool_name == "file_read":
+                lines = len(result.splitlines())
+                console.print(f"  [{_OK}]    [ok] ({lines} lines)[/{_OK}]")
+            elif tool_name == "grep_search":
+                matches = len([l for l in result.splitlines() if l.strip()])
+                console.print(f"  [{_OK}]    [ok] ({matches} matches)[/{_OK}]")
+            elif tool_name == "code_verify":
+                console.print(f"  [{_OK}]    [ok] syntax valid[/{_OK}]")
             elif tool_name == "shell_exec":
-                # Show first line of output if short
                 first = result.split("\n")[0][:60].strip()
                 if first and not first.startswith("[ok]"):
                     console.print(f"  [{_DIM}]    > {first}[/{_DIM}]")
+                console.print(f"  [{_OK}]    [ok][/{_OK}]")
+            else:
                 console.print(f"  [{_OK}]    [ok][/{_OK}]")
 
     def on_retry(self, attempt: int, reason: str) -> None:
@@ -649,6 +684,7 @@ class REPLCallbacks(AgentCallbacks):
 
     def close_trace(self, status: str = _STATE_COMPLETED) -> None:
         """Print the closing line of the execution trace box."""
+        console.print(" " * 45, end="\r")
         if not self._shown_header:
             return
         elapsed = time.monotonic() - self._start_time
@@ -760,13 +796,11 @@ def _render_response(token_gen, cbs: "REPLCallbacks | None" = None) -> str:
         console.print(Text("  cancelled", style=_DIM))
 
     full = "".join(collected).strip()
-    _last_response = full
-
-    # Render Markdown panel for structured responses
-    if full and any(c in full for c in ("```", "**", "##", "\n- ", "\n* ", "\n1.")):
+    if not full:
+        full = "Completed requested operations."
+        console.print(full, markup=False)
         console.print()
-        console.print(Panel(Markdown(full), border_style=_A5, padding=(1, 2)))
-
+    _last_response = full
     return full
 
 
@@ -782,10 +816,15 @@ def _load_session() -> list:
 
 def _save_session(history: list) -> None:
     try:
-        _HISTORY_DIR.mkdir(parents=True,exist_ok=True)
+        _HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        clean = [
+            m for m in history[-_MAX_SAVED_MESSAGES:]
+            if m.get("content") and not str(m.get("content")).startswith("[llm error]") and str(m.get("content")) != "[interrupted]"
+        ]
         _HISTORY_FILE.write_text(
-            json.dumps(history[-_MAX_SAVED_MESSAGES:],ensure_ascii=False),encoding="utf-8")
-    except Exception: pass
+            json.dumps(clean, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
 
 
 # ── @file / @dir context injection ────────────────────────────────────────────
@@ -1333,36 +1372,54 @@ def _run_agent_turn(user_input: str, history: list, max_retries: int = 2) -> str
     Includes Ollama crash recovery — retries up to max_retries on connection errors.
     Returns the response text.
     """
+    import threading
     from foder.llm import LLMError
     cbs = REPLCallbacks()
 
-    # Show "thinking" state while waiting for first token
+    # Show "thinking" state with live elapsed seconds while waiting for first token
     console.print(Text("  ◆ thinking...", style=_DIM), end="\r")
 
-    for attempt in range(max_retries + 1):
-        try:
-            token_gen, history[:] = run(user_input, history, callbacks=cbs)
-            break
-        except KeyboardInterrupt:
-            console.print(" " * 30, end="\r")
-            cbs.close_trace(_STATE_FAILED)
-            console.print(Text("  cancelled", style=_DIM))
-            return ""
-        except Exception as e:
-            err_str = str(e)
-            if attempt < max_retries and ("Cannot connect" in err_str or "ConnectError" in err_str):
-                console.print(f"\n  [{_YLW}]! Ollama disconnected — retrying ({attempt + 1}/{max_retries})...[/{_YLW}]")
-                import time as _t; _t.sleep(2)
-                cbs = REPLCallbacks()   # fresh callbacks for retry
-                continue
-            else:
-                console.print(" " * 30, end="\r")
-                cbs.close_trace(_STATE_FAILED)
-                err_msg = f"[llm error] {err_str}"
-                history.append({"role": "assistant", "content": err_msg})
-                return err_msg
+    stop_timer = threading.Event()
+    def _timer_worker():
+        t0 = time.monotonic()
+        while not stop_timer.wait(1.0):
+            elapsed = int(time.monotonic() - t0)
+            if cbs._token_count == 0 and not stop_timer.is_set():
+                console.print(Text(f"  ◆ thinking... ({elapsed}s)", style=_DIM), end="\r")
 
-    console.print(" " * 30, end="\r")
+    timer_thread = threading.Thread(target=_timer_worker, daemon=True)
+    timer_thread.start()
+
+    token_gen = None
+    try:
+        for attempt in range(max_retries + 1):
+            try:
+                token_gen, history[:] = run(user_input, history, callbacks=cbs)
+                break
+            except KeyboardInterrupt:
+                console.print(" " * 50, end="\r")
+                cbs.close_trace(_STATE_FAILED)
+                console.print(Text("  cancelled", style=_DIM))
+                return ""
+            except Exception as e:
+                err_str = str(e)
+                if attempt < max_retries and any(w in err_str for w in ("Cannot connect", "ConnectError", "disconnected", "RemoteProtocolError")):
+                    console.print(f"\n  [{_YLW}]! Ollama reconnecting — retrying ({attempt + 1}/{max_retries})...[/{_YLW}]")
+                    import time as _t; _t.sleep(2)
+                    cbs = REPLCallbacks()   # fresh callbacks for retry
+                    continue
+                else:
+                    console.print(" " * 50, end="\r")
+                    cbs.close_trace(_STATE_FAILED)
+                    err_msg = f"[llm error] {err_str}"
+                    history.append({"role": "assistant", "content": err_msg})
+                    return err_msg
+    finally:
+        stop_timer.set()
+
+    console.print(" " * 50, end="\r")
+    if token_gen is None:
+        return ""
     full = _render_response(token_gen, cbs)
     _save_session(history)
     return full

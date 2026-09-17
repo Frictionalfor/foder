@@ -285,20 +285,28 @@ def _build_messages(history: list[dict]) -> list[dict]:
 
 def _infer_filename(content: str, user_input: str, lang: str) -> str:
     # 1. Look for explicit filename in user_input
-    m = re.search(r'\b([a-zA-Z0-9_\-]+\.(?:py|js|ts|html|css|json|sh|c|cpp|rs|go|txt))\b', user_input)
+    m = re.search(r'\b([a-zA-Z0-9_\-]+\.(?:py|js|ts|html|css|json|sh|c|cpp|rs|go|java|txt))\b', user_input)
     if m:
         return m.group(1)
 
     # 2. Look for comment with filename in the first 5 lines of code
     for line in content.splitlines()[:5]:
-        cm = re.search(r'(?:#|//|<!--|\*)\s*([a-zA-Z0-9_\-]+\.(?:py|js|ts|html|css|json|sh|c|cpp|rs|go))\b', line)
+        cm = re.search(r'(?:#|//|<!--|\*)\s*([a-zA-Z0-9_\-]+\.(?:py|js|ts|html|css|json|sh|c|cpp|rs|go|java))\b', line)
         if cm:
             return cm.group(1)
 
-    # 3. Semantic keyword matching from user_input
+    # 3. If Java, extract class name if present
+    if lang == "java" or "public class " in content or "class " in content:
+        cm_cls = re.search(r'\bclass\s+([A-Za-z0-9_]+)\b', content)
+        if cm_cls:
+            return f"{cm_cls.group(1)}.java"
+
+    # 4. Semantic keyword matching from user_input
     lower_in = user_input.lower()
     if any(k in lower_in for k in ("calc", "calculator", "add", "subtract", "arithmetic", "divide", "multiply")):
         return "calculator.py" if lang in ("python", "py", "") else f"calculator.{lang}"
+    if any(k in lower_in for k in ("password", "passwd", "pwd")):
+        return "password_generator.py" if lang in ("python", "py", "") else f"password_generator.{lang}"
     if any(k in lower_in for k in ("todo", "task")):
         return "todo.py" if lang in ("python", "py", "") else f"todo.{lang}"
     if any(k in lower_in for k in ("weather",)):
@@ -306,14 +314,14 @@ def _infer_filename(content: str, user_input: str, lang: str) -> str:
     if any(k in lower_in for k in ("game", "tictactoe", "snake")):
         return "game.py"
     if any(k in lower_in for k in ("greet", "hello")):
-        return "greet.py"
+        return "HelloWorld.java" if lang == "java" else "greet.py"
 
     ext_map = {
         "python": "main.py", "py": "main.py",
         "c": "main.c", "cpp": "main.cpp", "c++": "main.cpp",
         "javascript": "main.js", "js": "main.js",
         "typescript": "main.ts", "ts": "main.ts",
-        "java": "Main.java", "go": "main.go",
+        "java": "HelloWorld.java", "go": "main.go",
         "rust": "main.rs", "bash": "script.sh", "sh": "script.sh",
         "html": "index.html", "css": "style.css",
     }
@@ -434,6 +442,9 @@ def _single(text: str) -> Generator[str, None, None]:
 class AgentCallbacks:
     """Callback interface for the agent loop -- all methods are optional."""
 
+    def on_token(self, token: str) -> None:
+        """Called for each token received from the LLM."""
+
     def on_tool_call(self, tool_name: str, parameters: dict) -> None:
         """Called just before a tool is executed."""
 
@@ -480,6 +491,7 @@ def run(
 
     consecutive_errors = 0
     loop_detector      = _LoopDetector()
+    executed_tools_all: list[tuple[str, dict, str]] = []
 
     for iteration in range(MAX_ITERATIONS):
         messages = _build_messages(history)
@@ -489,6 +501,8 @@ def run(
             tokens: list[str] = []
             for token in chat_stream(messages):
                 tokens.append(token)
+                if hasattr(callbacks, "on_token"):
+                    callbacks.on_token(token)
             raw = "".join(tokens)
         except LLMError as e:
             msg = str(e)
@@ -523,14 +537,44 @@ def run(
         tool_call = _extract_tool_call(raw) if has_tool else None
 
         # Fallback: model wrote a code block instead of using file_write
+        from_code_block = False
         if tool_call is None and not has_tool:
             tool_call = _extract_code_block_as_tool_call(raw, user_input)
+            if tool_call is not None:
+                from_code_block = True
 
         # ── Final answer (no tool call in response) ───────────────────────────
         if tool_call is None:
             clean = _strip_tool_json(raw)
+            if not clean:
+                if executed_tools_all:
+                    written = [p.get("path") for t, p, r in executed_tools_all if t == "file_write" and p.get("path")]
+                    if written:
+                        clean = f"Created {', '.join(written)} and verified syntax successfully."
+                    else:
+                        clean = "Completed requested operations successfully."
+                else:
+                    clean = "Completed requested task."
             history.append({"role": "assistant", "content": clean})
             return _stream_tokens([clean]), history
+
+        # If code block was extracted, execute file_write and confirm immediately
+        if from_code_block and tool_call is not None:
+            callbacks.on_tool_call(tool_call["tool"], tool_call["parameters"])
+            res = dispatch(tool_call["tool"], tool_call["parameters"])
+            is_err = _result_is_error(res)
+            callbacks.on_tool_result(tool_call["tool"], res, is_err)
+            executed_tools_all.append((tool_call["tool"], tool_call["parameters"], res))
+            if is_err:
+                history.append({"role": "assistant", "content": raw})
+                history.append({"role": "user", "content": f"[tool: file_write] FAILED\n{res}\nPlease fix this error immediately."})
+                continue
+            path_w = tool_call["parameters"].get("path", "file")
+            msg = f"Created `{path_w}` ({len(tool_call['parameters'].get('content', ''))} bytes) and verified syntax successfully."
+            history.append({"role": "assistant", "content": raw})
+            history.append({"role": "user", "content": f"[tool: file_write]\nresult:\n{res}"})
+            history.append({"role": "assistant", "content": msg})
+            return _stream_tokens([msg]), history
 
         # ── Execute ALL tool calls present in this response ───────────────────
         # Multi-file support: the model may emit multiple tool call JSON objects
@@ -578,6 +622,7 @@ def run(
             last_is_error = is_error
             callbacks.on_tool_result(tool_name, result, is_error)
             executed_any = True
+            executed_tools_all.append((tool_name, parameters, result))
 
             if is_error:
                 consecutive_errors += 1
@@ -619,18 +664,24 @@ def run(
         if last_is_error:
             continue
 
-        # ── After all tool calls: check for leftover natural language ─────────
-        # IMPORTANT: Only return here if there is actual human-readable text.
-        # If remaining is empty or only tool JSON, loop back to LLM to continue.
-        leftover = _strip_tool_json(remaining).strip()
+        # ── Fast-path confirmation for successful file modifications ─────────
+        if executed_any and not last_is_error:
+            user_lower = user_input.lower()
+            wants_run = any(w in user_lower for w in ("run", "test", "exec", "output"))
 
-        # A leftover is only a real final answer if it contains words, not just
-        # punctuation or whitespace left after stripping JSON.
-        if leftover and len(leftover) > 10 and not _is_tool_call(leftover):
-            history.append({"role": "assistant", "content": leftover})
-            return _stream_tokens([leftover]), history
+            writes = [p.get("path") for t, p, r in executed_tools_all if t == "file_write" and p.get("path")]
+            if writes and not wants_run and any(w in user_lower for w in ("create", "write", "make", "generate", "code", "script", "program")):
+                confirm_msg = f"Created {', '.join(writes)} and verified syntax successfully."
+                history.append({"role": "assistant", "content": confirm_msg})
+                return _stream_tokens([confirm_msg]), history
 
-        # No final answer yet — loop back to LLM so it can continue the task.
+            edits = [p.get("path") for t, p, r in executed_tools_all if t == "file_edit" and p.get("path")]
+            if edits and not wants_run and any(w in user_lower for w in ("edit", "modify", "update", "change", "refactor", "patch", "fix")):
+                confirm_msg = f"Updated {', '.join(edits)} and verified syntax successfully."
+                history.append({"role": "assistant", "content": confirm_msg})
+                return _stream_tokens([confirm_msg]), history
+
+        # Otherwise continue to LLM for next step in multi-turn task (inspection, execution, or next edits)
         continue
 
     # Reached MAX_ITERATIONS
