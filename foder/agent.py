@@ -283,20 +283,69 @@ def _build_messages(history: list[dict]) -> list[dict]:
 
 # ── Code block fallback ────────────────────────────────────────────────────────
 
+def _infer_filename(content: str, user_input: str, lang: str) -> str:
+    # 1. Look for explicit filename in user_input
+    m = re.search(r'\b([a-zA-Z0-9_\-]+\.(?:py|js|ts|html|css|json|sh|c|cpp|rs|go|txt))\b', user_input)
+    if m:
+        return m.group(1)
+
+    # 2. Look for comment with filename in the first 5 lines of code
+    for line in content.splitlines()[:5]:
+        cm = re.search(r'(?:#|//|<!--|\*)\s*([a-zA-Z0-9_\-]+\.(?:py|js|ts|html|css|json|sh|c|cpp|rs|go))\b', line)
+        if cm:
+            return cm.group(1)
+
+    # 3. Semantic keyword matching from user_input
+    lower_in = user_input.lower()
+    if any(k in lower_in for k in ("calc", "calculator", "add", "subtract", "arithmetic", "divide", "multiply")):
+        return "calculator.py" if lang in ("python", "py", "") else f"calculator.{lang}"
+    if any(k in lower_in for k in ("todo", "task")):
+        return "todo.py" if lang in ("python", "py", "") else f"todo.{lang}"
+    if any(k in lower_in for k in ("weather",)):
+        return "weather.py"
+    if any(k in lower_in for k in ("game", "tictactoe", "snake")):
+        return "game.py"
+    if any(k in lower_in for k in ("greet", "hello")):
+        return "greet.py"
+
+    ext_map = {
+        "python": "main.py", "py": "main.py",
+        "c": "main.c", "cpp": "main.cpp", "c++": "main.cpp",
+        "javascript": "main.js", "js": "main.js",
+        "typescript": "main.ts", "ts": "main.ts",
+        "java": "Main.java", "go": "main.go",
+        "rust": "main.rs", "bash": "script.sh", "sh": "script.sh",
+        "html": "index.html", "css": "style.css",
+    }
+    return ext_map.get(lang, "main.py")
+
+
 def _extract_code_block_as_tool_call(response: str, user_input: str) -> dict | None:
     """
-    Fallback: model output a fenced code block instead of a tool call.
+    Fallback: model output a fenced code block or raw code instead of a tool call.
     Synthesize a file_write tool call from the code block.
     Only used when there is NO tool call JSON anywhere in the response.
     """
     pattern = re.compile(r"```(\w+)?\s*\n(.*?)```", re.DOTALL)
     match   = pattern.search(response)
-    if not match:
-        return None
 
-    lang    = (match.group(1) or "").lower().strip()
-    content = match.group(2).strip()
-    if not content or not lang:
+    if match:
+        lang    = (match.group(1) or "").lower().strip()
+        content = match.group(2).strip()
+    else:
+        # Check for unfenced code
+        stripped = response.strip()
+        is_code = (
+            ("def " in stripped or "import " in stripped or "class " in stripped)
+            and any(kw in user_input.lower() for kw in ("python", "program", "script", "code", "calc", "add", "function"))
+        )
+        if is_code:
+            lang = "python"
+            content = stripped
+        else:
+            return None
+
+    if not content:
         return None
 
     # Only trigger for known code languages — not markdown/json/text
@@ -305,23 +354,12 @@ def _extract_code_block_as_tool_call(response: str, user_input: str) -> dict | N
         "typescript", "ts", "java", "go", "rust", "bash", "sh",
         "html", "css",
     }
+    if not lang:
+        lang = "python" if any(k in user_input.lower() for k in ("python", "py", "calc", "add")) else ""
     if lang not in CODE_LANGS:
         return None
 
-    filename_match = re.search(r'\b([\w\-]+\.\w+)\b', user_input)
-    if filename_match:
-        filename = filename_match.group(1)
-    else:
-        ext_map = {
-            "python": "main.py", "py": "main.py",
-            "c": "main.c", "cpp": "main.cpp", "c++": "main.cpp",
-            "javascript": "main.js", "js": "main.js",
-            "typescript": "main.ts", "ts": "main.ts",
-            "java": "Main.java", "go": "main.go",
-            "rust": "main.rs", "bash": "script.sh", "sh": "script.sh",
-            "html": "index.html", "css": "style.css",
-        }
-        filename = ext_map.get(lang, f"main.{lang}")
+    filename = _infer_filename(content, user_input, lang)
 
     return {
         "tool":       "file_write",
@@ -496,15 +534,25 @@ def run(
 
         # ── Execute ALL tool calls present in this response ───────────────────
         # Multi-file support: the model may emit multiple tool call JSON objects
-        # in a single response. We execute them all before looping back.
+        # in a single response, or a synthesized tool call from a code block.
+        tool_calls_to_execute: list[tuple[dict, str]] = []
         remaining = raw
+
+        if has_tool:
+            while True:
+                tc = _extract_tool_call(remaining) if _is_tool_call(remaining) else None
+                if tc is None:
+                    break
+                tool_calls_to_execute.append((tc, remaining))
+                remaining = _strip_one_tool_call(remaining)
+        elif tool_call is not None:
+            tool_calls_to_execute.append((tool_call, raw))
+            remaining = ""
+
         executed_any = False
+        last_is_error = False
 
-        while True:
-            tc = _extract_tool_call(remaining) if _is_tool_call(remaining) else None
-            if tc is None:
-                break
-
+        for tc, turn_content in tool_calls_to_execute:
             tool_name  = tc["tool"]
             parameters = tc.get("parameters", {})
 
@@ -512,7 +560,7 @@ def run(
             tool_loop_msg = loop_detector.record_tool(tool_name, parameters)
             if tool_loop_msg:
                 callbacks.on_retry(-2, tool_loop_msg)
-                history.append({"role": "assistant", "content": remaining})
+                history.append({"role": "assistant", "content": turn_content})
                 history.append({"role": "user",      "content": f"[loop detected] {tool_loop_msg}"})
                 try:
                     exit_tokens = []
@@ -527,6 +575,7 @@ def run(
             callbacks.on_tool_call(tool_name, parameters)
             result   = dispatch(tool_name, parameters)
             is_error = _result_is_error(result)
+            last_is_error = is_error
             callbacks.on_tool_result(tool_name, result, is_error)
             executed_any = True
 
@@ -539,7 +588,7 @@ def run(
                         f"Last error: {result}\n"
                         "Stop trying this approach and tell the user what went wrong."
                     )
-                    history.append({"role": "assistant", "content": remaining})
+                    history.append({"role": "assistant", "content": turn_content})
                     history.append({"role": "user",      "content": error_msg})
                     # Break inner loop — outer loop continues for self-correction
                     break
@@ -556,18 +605,19 @@ def run(
                 f"result:\n{stored}"
             )
 
-            # Store this tool call + result in history, then strip it from remaining
-            history.append({"role": "assistant", "content": remaining})
+            # Store this tool call + result in history
+            history.append({"role": "assistant", "content": turn_content})
             history.append({"role": "user",      "content": tool_turn})
-
-            remaining = _strip_one_tool_call(remaining)
-            # Continue inner loop — there may be more tool calls in `remaining`
 
         if not executed_any:
             # No tool was executed (e.g. all were loop-detected) — avoid infinite loop
             clean = _strip_tool_json(raw)
             history.append({"role": "assistant", "content": clean})
             return _stream_tokens([clean]), history
+
+        # If any tool failed (e.g. syntax error), loop back to LLM immediately to self-correct
+        if last_is_error:
+            continue
 
         # ── After all tool calls: check for leftover natural language ─────────
         # IMPORTANT: Only return here if there is actual human-readable text.
@@ -581,8 +631,7 @@ def run(
             return _stream_tokens([leftover]), history
 
         # No final answer yet — loop back to LLM so it can continue the task.
-        # This is what enables multi-file project generation: the LLM writes
-        # file 1, we execute it, loop back, LLM writes file 2, etc.
+        continue
 
     # Reached MAX_ITERATIONS
     timeout_msg = (

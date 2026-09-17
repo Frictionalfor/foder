@@ -2,41 +2,18 @@ from foder.security import validate_path, SecurityError
 
 SCHEMA = {
     "name": "dir_list",
-    "description": "List files and directories at a given path inside the workspace.",
+    "description": "List files and directories at a given path inside the workspace. Defaults to '.' (workspace root).",
     "parameters": {
         "path": {
             "type": "string",
-            "description": "Relative path to the directory. Use '.' for workspace root.",
+            "description": "Relative path to the directory. Use '.' for workspace root. Defaults to '.'.",
         }
     },
-    "required": ["path"],
+    "required": [],
 }
 
-# File extension → color
-_EXT_COLORS = {
-    ".py":   "#4ADE80",   # green
-    ".js":   "#FCD34D",   # yellow
-    ".ts":   "#60A5FA",   # blue
-    ".jsx":  "#FCD34D",
-    ".tsx":  "#60A5FA",
-    ".html": "#F97316",   # orange
-    ".css":  "#A78BFA",   # violet
-    ".json": "#FB923C",   # amber
-    ".md":   "#94A3B8",   # slate
-    ".c":    "#67E8F9",   # cyan
-    ".cpp":  "#67E8F9",
-    ".h":    "#A5F3FC",
-    ".sh":   "#86EFAC",
-    ".txt":  "#D1D5DB",
-    ".zip":  "#F472B6",
-    ".tar":  "#F472B6",
-    ".gz":   "#F472B6",
-}
-_DIR_COLOR  = "#60A5FA"   # blue for directories
-_FILE_COLOR = "#E5E7EB"   # light grey default for files
 
-
-def execute(path: str) -> str:
+def execute(path: str = ".") -> str:
     try:
         target = validate_path(path)
     except SecurityError as e:
@@ -52,17 +29,18 @@ def execute(path: str) -> str:
         if not entries:
             return "[empty directory]"
 
-        lines = []
+        items = []
         for entry in entries:
+            if entry.name.startswith("."):
+                continue
             if entry.is_dir():
-                # Directories: blue + trailing slash
-                lines.append(f"[{_DIR_COLOR}]{entry.name}/[/{_DIR_COLOR}]")
+                items.append(f"{entry.name}/")
             else:
-                # Files: color by extension
-                ext   = entry.suffix.lower()
-                color = _EXT_COLORS.get(ext, _FILE_COLOR)
-                lines.append(f"[{color}]{entry.name}[/{color}]")
+                items.append(entry.name)
 
-        return "  " + "  ".join(lines)
+        if not items:
+            return "[empty directory]"
+
+        return "  " + "  ".join(items)
     except Exception as e:
         return f"[error] Could not list directory: {e}"

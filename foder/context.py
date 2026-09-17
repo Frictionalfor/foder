@@ -66,6 +66,28 @@ def _glob_any(ws: Path, *patterns: str) -> bool:
 
 def _detect_project_uncached(ws: Path) -> ProjectProfile:
 
+    # ── Empty workspace check ────────────────────────────────────────────────
+    visible_entries: list[Path] = []
+    if ws.exists():
+        try:
+            visible_entries = [p for p in ws.iterdir() if not p.name.startswith(".")]
+        except Exception:
+            pass
+
+    if not visible_entries:
+        return ProjectProfile(
+            project_type   = ["empty workspace"],
+            package_manager= "none",
+            test_framework = "none",
+            build_system   = "none",
+            linter         = "none",
+            formatter      = "none",
+            entry_points   = [],
+            config_files   = [],
+            docker         = False,
+            summary        = "empty workspace",
+        )
+
     types:        list[str] = []
     pkg_mgr:      str = "unknown"
     test_fw:      str = "unknown"
@@ -77,7 +99,8 @@ def _detect_project_uncached(ws: Path) -> ProjectProfile:
     docker:       bool = False
 
     # ── Python ───────────────────────────────────────────────────────────────
-    if _has(ws, "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile"):
+    has_py_files = _glob_any(ws, "*.py")
+    if _has(ws, "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile") or has_py_files:
         types.append("python")
         pkg_mgr = "pip"
         if _has(ws, "Pipfile"):
@@ -89,6 +112,8 @@ def _detect_project_uncached(ws: Path) -> ProjectProfile:
             if "uv" in txt:
                 pkg_mgr = "uv"
             config_files.append("pyproject.toml")
+        elif not _has(ws, "setup.py", "setup.cfg", "requirements.txt", "Pipfile"):
+            pkg_mgr = "none"
 
         # Frameworks
         reqs = _read_first(ws, "requirements.txt", "pyproject.toml", "Pipfile")
@@ -104,6 +129,8 @@ def _detect_project_uncached(ws: Path) -> ProjectProfile:
             test_fw = "pytest"
         elif any(f in reqs for f in ("unittest",)):
             test_fw = "unittest"
+        elif _has(ws, "tests") or _glob_any(ws, "test_*.py", "*_test.py"):
+            test_fw = "pytest"
         else:
             test_fw = "pytest"  # default assumption for Python
 
@@ -124,15 +151,20 @@ def _detect_project_uncached(ws: Path) -> ProjectProfile:
             formatter = "ruff format"
 
         # Entry points
-        for ep in ("main.py", "app.py", "run.py", "manage.py", "__main__.py"):
+        for ep in ("main.py", "app.py", "run.py", "manage.py", "__main__.py", "calculator.py"):
             if (ws / ep).exists():
                 entry_points.append(ep)
+        if not entry_points and has_py_files:
+            for py_p in sorted(ws.glob("*.py"))[:3]:
+                if py_p.name not in entry_points:
+                    entry_points.append(py_p.name)
 
     # ── JavaScript / TypeScript / Node ────────────────────────────────────────
-    if _has(ws, "package.json"):
-        types.append("nodejs")
+    has_js_files = _glob_any(ws, "*.js", "*.jsx", "*.ts", "*.tsx")
+    if _has(ws, "package.json") or has_js_files:
+        types.append("nodejs" if _has(ws, "package.json") else "javascript")
         pkg_json = _read_first(ws, "package.json")
-        pkg_mgr = "npm"
+        pkg_mgr = "npm" if _has(ws, "package.json") else "none"
         if _has(ws, "yarn.lock"):
             pkg_mgr = "yarn"
         elif _has(ws, "pnpm-lock.yaml"):
@@ -512,6 +544,19 @@ def _build_context_summary_uncached(ws: Path) -> str:
         f"PROJECT: {profile.summary}",
         f"WORKSPACE: {ws}",
     ]
+
+    try:
+        entries = [
+            p.name + ("/" if p.is_dir() else "")
+            for p in sorted(ws.iterdir())
+            if not p.name.startswith(".")
+        ]
+        if entries:
+            lines.append("WORKSPACE FILES: " + ", ".join(entries[:25]))
+        else:
+            lines.append("WORKSPACE FILES: (empty workspace)")
+    except Exception:
+        pass
 
     if profile.entry_points:
         lines.append("ENTRY POINTS: " + ", ".join(profile.entry_points))

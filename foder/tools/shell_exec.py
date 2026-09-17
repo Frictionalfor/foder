@@ -26,7 +26,8 @@ def execute(command: str) -> str:
         return f"[security error] {e}"
 
     try:
-        cwd = str(config.WORKSPACE) if config.WORKSPACE.exists() else None
+        ws = config.WORKSPACE.resolve()
+        cwd = str(ws) if ws.exists() else None
         result = subprocess.run(
             command,
             shell=True,
@@ -35,14 +36,15 @@ def execute(command: str) -> str:
             text=True,
             timeout=config.SHELL_TIMEOUT,
         )
-        output = ""
+        parts = []
         if result.stdout:
-            output += result.stdout
+            parts.append(result.stdout.rstrip())
         if result.stderr:
-            output += result.stderr
+            parts.append(f"[stderr]\n{result.stderr.rstrip()}")
         if result.returncode != 0:
-            output += f"\n[exit code {result.returncode}]"
-        return output.strip() or "[no output]"
+            parts.append(f"[exit code {result.returncode}]")
+        output = "\n".join(parts).strip()
+        return output or "[ok] Command executed with no output"
     except subprocess.TimeoutExpired:
         return f"[error] Command timed out after {config.SHELL_TIMEOUT}s"
     except KeyboardInterrupt:

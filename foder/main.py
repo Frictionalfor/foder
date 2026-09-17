@@ -1,5 +1,5 @@
 """Foder CLI — production-grade terminal coding agent."""
-import sys, time, json, subprocess, difflib, re
+import sys, time, json, subprocess, difflib, re, datetime
 import foder.config as config
 from pathlib import Path
 from prompt_toolkit import PromptSession
@@ -185,6 +185,7 @@ def _print_banner() -> None:
     meta = Table.grid(padding=(0,1))
     meta.add_row(Text("  workspace ", style=_DIM), Text(str(config.WORKSPACE), style=_A2))
     meta.add_row(Text("  model     ", style=_DIM), Text(config.OLLAMA_MODEL,   style=f"bold {_A1}"))
+    meta.add_row(Text("  time      ", style=_DIM), Text(datetime.datetime.now().strftime("%H:%M"), style=_DIM))
     if ctx_line:
         meta.add_row(Text("  project   ", style=_DIM), Text(ctx_line, style=_DIM))
     meta.add_row(Text("",style=""), Text("",style=""))
@@ -528,6 +529,7 @@ _TOOL_UI: dict[str, tuple[str, str, str]] = {
     "dir_create":   ("mkdir",   "+", "_A2"),
     "dir_remove":   ("rmdir",   "-", "_DIM"),
     "shell_exec":   ("exec",    "$", "_YLW"),
+    "code_verify":  ("verify",  "✓", "_A2"),
     "grep_search":  ("grep",    "?", "_A3"),
     "git_tool":     ("git",     "⎇", "_A3"),
 }

@@ -116,8 +116,19 @@ def execute(path: str, old_str: str, new_str: str) -> str:
 
     # ── Strategy 1: exact match ───────────────────────────────────────────────
     count = content.count(old_str)
+    idx = content.find(old_str) if count == 1 else -1
 
-    if count == 1:
+    # Check if this exact match is actually an indentation mismatch
+    # (e.g. old_str has leading whitespace, but matched mid-indentation of a more deeply indented line)
+    is_partial_indent = (
+        count == 1
+        and bool(old_str)
+        and old_str[0] in " \t"
+        and idx > 0
+        and content[idx - 1] in " \t"
+    )
+
+    if count == 1 and not is_partial_indent:
         new_content = content.replace(old_str, new_str, 1)
         match_type  = ""
 
@@ -157,5 +168,22 @@ def execute(path: str, old_str: str, new_str: str) -> str:
     except Exception as e:
         return f"[error] Could not write file: {e}"
 
+    # Invalidate workspace cache so context detects modified files immediately
+    try:
+        from foder.context import invalidate_cache
+        invalidate_cache()
+    except Exception:
+        pass
+
+    # Verify syntax (e.g. Python ast/py_compile check)
+    from foder.verification import verify_file
+    is_valid, vmsg = verify_file(target)
+    if not is_valid:
+        return (
+            f"[error] File {path} was edited, but syntax verification failed:\n"
+            f"{vmsg}\n"
+            "Please analyze this error and fix the syntax immediately using file_edit or file_write."
+        )
+
     lines_changed = abs(new_content.count("\n") - content.count("\n"))
-    return f"[ok] Edited {path} (+/-{lines_changed} lines){match_type}"
+    return f"[ok] Edited {path} (+/-{lines_changed} lines){match_type} ({vmsg})"

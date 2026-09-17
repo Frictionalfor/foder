@@ -28,6 +28,7 @@ import foder.tools.dir_remove  as dir_remove
 import foder.tools.shell_exec  as shell_exec
 import foder.tools.grep_search as grep_search
 import foder.tools.git_tool    as git_tool
+import foder.tools.code_verify as code_verify
 
 # ── Primary registry ──────────────────────────────────────────────────────────
 
@@ -42,6 +43,8 @@ _REGISTRY: dict[str, object] = {
     "dir_list":     dir_list,
     "dir_create":   dir_create,
     "dir_remove":   dir_remove,
+    # Verification
+    "code_verify":  code_verify,
     # Search tools
     "grep_search":  grep_search,
     # Shell tool
@@ -101,6 +104,11 @@ _ALIASES: dict[str, str] = {
     "git_diff":          "git_tool",
     "git_commit":        "git_tool",
     "git_log":           "git_tool",
+    # code_verify
+    "verify":            "code_verify",
+    "validate":          "code_verify",
+    "verify_code":       "code_verify",
+    "check_syntax":      "code_verify",
 }
 
 
@@ -117,10 +125,10 @@ def _resolve(name: str) -> str | None:
 
 
 # Exported schemas for prompt injection
-# Only expose the core tools to keep the system prompt lean.
 _PROMPT_TOOLS = [
-    "file_read", "file_write", "file_edit",
+    "file_read", "file_write", "file_edit", "file_delete", "file_rename",
     "dir_list", "dir_create", "dir_remove",
+    "code_verify",
     "shell_exec", "grep_search", "git_tool",
 ]
 
@@ -140,6 +148,10 @@ def dispatch(tool_name: str, parameters: dict) -> str:
     canonical = _resolve(tool_name)
     if canonical is None:
         return f"[error] Unknown tool: '{tool_name}'. Available: {', '.join(sorted(_REGISTRY))}"
+
+    parameters = dict(parameters)
+    if canonical == "dir_list" and "path" not in parameters:
+        parameters["path"] = "."
 
     module   = _REGISTRY[canonical]
     schema   = module.SCHEMA  # type: ignore[attr-defined]

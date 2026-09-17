@@ -6,13 +6,15 @@ Workspace: ~/timepass  (created automatically if missing)
 Run with: python3 tests/test_integration.py
 Requires: ollama running with at least one model pulled.
 """
+import os
 import sys
 import time
 import shutil
+import tempfile
 from pathlib import Path
 
 # ── Workspace setup ────────────────────────────────────────────────────────────
-WORKSPACE = Path.home() / "timepass"
+WORKSPACE = Path(os.environ.get("FODER_TEST_WORKSPACE", tempfile.gettempdir() + "/foder_integration_test"))
 WORKSPACE.mkdir(parents=True, exist_ok=True)
 
 # Set workspace before importing foder modules
@@ -112,106 +114,109 @@ def task(
     print(f"\n  {status}  {name}")
 
 
-# ── Test suite ─────────────────────────────────────────────────────────────────
+def main() -> None:
+    print("\n" + "=" * 60)
+    print("  FODER AGENT TEST SUITE")
+    print(f"  workspace: {WORKSPACE}")
+    print("=" * 60)
 
-print("\n" + "=" * 60)
-print("  FODER AGENT TEST SUITE")
-print(f"  workspace: {WORKSPACE}")
-print("=" * 60)
+    clean_workspace()
 
-clean_workspace()
+    # T1 — Single file creation
+    task(
+        name="Create Python file",
+        prompt='create a python file called greet.py that prints "Hello from Foder"',
+        expect_files=["greet.py"],
+    )
 
-# T1 — Single file creation
-task(
-    name="Create Python file",
-    prompt='create a python file called greet.py that prints "Hello from Foder"',
-    expect_files=["greet.py"],
-)
+    # T2 — File with logic
+    task(
+        name="Create calculator",
+        prompt="create a python file called calc.py that defines add(a,b) and prints add(3,4)",
+        expect_files=["calc.py"],
+    )
 
-# T2 — File with logic
-task(
-    name="Create calculator",
-    prompt="create a python file called calc.py that defines add(a,b) and prints add(3,4)",
-    expect_files=["calc.py"],
-)
+    # T3 — Directory creation
+    task(
+        name="Create directory",
+        prompt="create a directory called test-output",
+        expect_files=["test-output"],
+    )
 
-# T3 — Directory creation
-task(
-    name="Create directory",
-    prompt="create a directory called test-output",
-    expect_files=["test-output"],
-)
+    # T4 — List files (multi-step: list after previous creates)
+    task(
+        name="List workspace files",
+        prompt="list all files in the current directory",
+        expect_text=["greet", "calc"],
+    )
 
-# T4 — List files (multi-step: list after previous creates)
-task(
-    name="List workspace files",
-    prompt="list all files in the current directory",
-    expect_text=["greet", "calc"],
-)
+    # T5 — Read + edit existing file
+    task(
+        name="Edit existing file",
+        prompt='read greet.py and add a second print statement that says "Version 1.0"',
+        expect_files=["greet.py"],
+    )
 
-# T5 — Read + edit existing file
-task(
-    name="Edit existing file",
-    prompt='read greet.py and add a second print statement that says "Version 1.0"',
-    expect_files=["greet.py"],
-)
+    # T6 — C file
+    task(
+        name="Create C file",
+        prompt='create a C file called hello.c that prints "Hello from C"',
+        expect_files=["hello.c"],
+    )
 
-# T6 — C file
-task(
-    name="Create C file",
-    prompt='create a C file called hello.c that prints "Hello from C"',
-    expect_files=["hello.c"],
-)
+    # T7 — Run a Python file
+    task(
+        name="Run Python file",
+        prompt="run greet.py using python3",
+        expect_text=["Hello"],
+    )
 
-# T7 — Run a Python file
-task(
-    name="Run Python file",
-    prompt="run greet.py using python3",
-    expect_text=["Hello"],
-)
+    # T8 — MULTI-FILE: Python package with 2 files (bug 2 regression test)
+    task(
+        name="Multi-file: Python package",
+        prompt=(
+            "create two python files: "
+            "utils.py that defines a function greet(name) returning 'Hello ' + name, "
+            "and main.py that imports greet from utils and prints greet('Foder')"
+        ),
+        expect_files=["utils.py", "main.py"],
+    )
 
-# T8 — MULTI-FILE: Python package with 2 files (bug 2 regression test)
-task(
-    name="Multi-file: Python package",
-    prompt=(
-        "create two python files: "
-        "utils.py that defines a function greet(name) returning 'Hello ' + name, "
-        "and main.py that imports greet from utils and prints greet('Foder')"
-    ),
-    expect_files=["utils.py", "main.py"],
-)
+    # T9 — MULTI-FILE: HTML + CSS
+    task(
+        name="Multi-file: HTML + CSS",
+        prompt=(
+            "create a simple webpage: index.html with a heading 'Hello Foder' "
+            "and style.css that makes the heading green"
+        ),
+        expect_files=["index.html", "style.css"],
+    )
 
-# T9 — MULTI-FILE: HTML + CSS
-task(
-    name="Multi-file: HTML + CSS",
-    prompt=(
-        "create a simple webpage: index.html with a heading 'Hello Foder' "
-        "and style.css that makes the heading green"
-    ),
-    expect_files=["index.html", "style.css"],
-)
+    # T10 — Shell command
+    task(
+        name="Shell: echo command",
+        prompt="run the shell command: echo 'foder_test_ok'",
+        expect_text=["foder_test_ok"],
+    )
 
-# T10 — Shell command
-task(
-    name="Shell: echo command",
-    prompt="run the shell command: echo 'foder_test_ok'",
-    expect_text=["foder_test_ok"],
-)
+    # ── Summary ────────────────────────────────────────────────────────────────────
 
-# ── Summary ────────────────────────────────────────────────────────────────────
+    print("\n" + "=" * 60)
+    print("  RESULTS")
+    print("=" * 60)
 
-print("\n" + "=" * 60)
-print("  RESULTS")
-print("=" * 60)
+    passed_count = sum(1 for _, p, _ in results if p)
+    failed_count = sum(1 for _, p, _ in results if not p)
 
-passed_count = sum(1 for _, p, _ in results if p)
-failed_count = sum(1 for _, p, _ in results if not p)
+    for name, p, msg in results:
+        icon = PASS if p else FAIL
+        print(f"  {icon}  {name:<36}  {msg}")
 
-for name, p, msg in results:
-    icon = PASS if p else FAIL
-    print(f"  {icon}  {name:<36}  {msg}")
+    print(f"\n  {passed_count} passed  {failed_count} failed  ({len(results)} total)")
+    print("=" * 60 + "\n")
 
-print(f"\n  {passed_count} passed  {failed_count} failed  ({len(results)} total)")
-print("=" * 60 + "\n")
+    sys.exit(0 if failed_count == 0 else 1)
 
-sys.exit(0 if failed_count == 0 else 1)
+
+if __name__ == "__main__":
+    main()

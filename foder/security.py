@@ -31,9 +31,18 @@ def validate_path(raw_path: str) -> Path:
     """
     Resolve path and ensure it is inside the current WORKSPACE.
     Reads config.WORKSPACE dynamically so !cd changes are respected.
+    Prevents directory traversal escapes (../, /etc, etc.).
     """
-    workspace = config.WORKSPACE
-    target = (workspace / raw_path).resolve()
+    workspace = config.WORKSPACE.resolve()
+    if not raw_path or not str(raw_path).strip():
+        return workspace
+
+    raw = Path(raw_path)
+    if raw.is_absolute():
+        target = raw.resolve()
+    else:
+        target = (workspace / raw).resolve()
+
     try:
         target.relative_to(workspace)
     except ValueError:
@@ -45,9 +54,12 @@ def validate_path(raw_path: str) -> Path:
 
 def validate_command(command: str) -> None:
     normalized = command.strip()
+    low = normalized.lower()
     for blocked in _BLOCKED_COMMANDS:
-        if blocked in normalized:
+        if blocked in low:
             raise SecurityError(f"Command blocked by security policy: '{blocked}'")
     for prefix in _BLOCKED_PREFIXES:
-        if normalized.lower().startswith(prefix):
+        if low.startswith(prefix):
             raise SecurityError(f"Command blocked by security policy: '{prefix}'")
+    if "rm -rf /*" in low or "rm -rf / *" in low:
+        raise SecurityError("Command blocked by security policy: 'rm -rf /*'")
